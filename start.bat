@@ -113,6 +113,6 @@ if "%USE_ENV%"=="0" (
 )
 
 start "" /b powershell -WindowStyle Hidden -Command "while (!(Test-NetConnection -ComputerName 127.0.0.1 -Port 7860 -WarningAction SilentlyContinue).TcpTestSucceeded) { Start-Sleep -Seconds 1 }; Start-Process 'http://127.0.0.1:7860'"
-%PYTHON_CMD% -m omnivoice_demo --ip 127.0.0.1 --port 7860
+%PYTHON_CMD% -m omnivoice.cli.demo --ip 127.0.0.1 --port 7860
 
 pause

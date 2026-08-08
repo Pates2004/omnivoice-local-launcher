@@ -65,9 +65,7 @@ from transformers import AutoFeatureExtractor, HiggsAudioV2TokenizerModel
 from omnivoice.data.dataset import JsonlDatasetReader, WebDatasetReader
 from omnivoice.utils.common import str2bool
 
-warnings.filterwarnings(
-    "ignore", category=FutureWarning, module="torch.nn.utils.weight_norm"
-)
+warnings.filterwarnings("ignore", category=FutureWarning, module="torch.nn.utils.weight_norm")
 
 HIGGS_INPUT_SAMPLE_RATE = 24_000
 
@@ -109,8 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--min_num_shards",
         type=int,
         default=32,
-        help="Minimum number of output shards (use to ensure "
-        "shard count >= num_gpu * num_workers)",
+        help="Minimum number of output shards (use to ensure shard count >= num_gpu * num_workers)",
     )
     parser.add_argument(
         "--tokenizer_path",
@@ -193,8 +190,7 @@ def process_init(rank_queue, tokenizer_path):
 
     # Configure worker process logging
     formatter = (
-        "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d]"
-        " [Worker %(process)d] %(message)s"
+        "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] [Worker %(process)d] %(message)s"
     )
     logging.basicConfig(format=formatter, level=logging.INFO, force=True)
 
@@ -368,19 +364,13 @@ def main() -> None:
                 )
                 assert os.path.exists(tar_path), f"File {tar_path} does not exist."
                 assert os.path.exists(jsonl_path), f"File {jsonl_path} does not exist."
-                assert jsonl_path.endswith(".jsonl"), (
-                    f"File {jsonl_path} is not a .jsonl file."
-                )
-                if (
-                    args.num_machines > 1
-                    and line_id % args.num_machines != args.machine_index
-                ):
+                assert jsonl_path.endswith(".jsonl"), f"File {jsonl_path} is not a .jsonl file."
+                if args.num_machines > 1 and line_id % args.num_machines != args.machine_index:
                     continue
                 total_samples += num_items
                 manifests.append((tar_path, jsonl_path, num_items, duration))
         logging.info(
-            f"Total shards: {manifest_num_lines}, "
-            f"Shards for current index: {len(manifests)}"
+            f"Total shards: {manifest_num_lines}, Shards for current index: {len(manifests)}"
         )
         base_dataset = WebDatasetReader(
             manifests=manifests,
@@ -391,9 +381,7 @@ def main() -> None:
     # Adjust samples_per_shard if min_num_shards would be violated
     samples_per_shard = args.samples_per_shard
     if total_samples > 0:
-        estimated_shards = max(
-            1, (total_samples + samples_per_shard - 1) // samples_per_shard
-        )
+        estimated_shards = max(1, (total_samples + samples_per_shard - 1) // samples_per_shard)
         if estimated_shards < args.min_num_shards:
             samples_per_shard = max(1, total_samples // args.min_num_shards)
             logging.info(
@@ -506,9 +494,7 @@ def main() -> None:
         except Exception as exc:
             write_error_count += 1
             failed_ids.append(key)
-            error_logger.error(
-                json.dumps({"id": key, "reason": str(exc)}, ensure_ascii=False)
-            )
+            error_logger.error(json.dumps({"id": key, "reason": str(exc)}, ensure_ascii=False))
             logging.error(f"Write failed for sample {key}: {exc}")
 
     def handle_result(result):
@@ -533,9 +519,7 @@ def main() -> None:
                     f"Sample {result['key']} processing failed due "
                     f"to {result['error_msg']} - terminating"
                 )
-            logging.warning(
-                f"Skipping failed sample {result['key']}: {result['error_msg']}"
-            )
+            logging.warning(f"Skipping failed sample {result['key']}: {result['error_msg']}")
 
     main_progress = tqdm(total=total_samples, desc="Extracting Audio Tokens")
 
@@ -612,13 +596,9 @@ def main() -> None:
     if total_failed > 0:
         logging.info(f"Error details: {error_log_path}")
     if failed_ids and args.skip_errors:
-        logging.warning(
-            f"Failed sample IDs (count: {len(failed_ids)}): {failed_ids[:100]}..."
-        )
+        logging.warning(f"Failed sample IDs (count: {len(failed_ids)}): {failed_ids[:100]}...")
     if write_error_count > 0 and not args.skip_errors:
-        raise RuntimeError(
-            f"{write_error_count} samples failed to write - check logs for details"
-        )
+        raise RuntimeError(f"{write_error_count} samples failed to write - check logs for details")
 
 
 if __name__ == "__main__":

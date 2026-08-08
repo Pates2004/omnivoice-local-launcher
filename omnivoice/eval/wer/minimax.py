@@ -120,9 +120,7 @@ def get_parser():
         default=16,
         help="Batch size for decoding with the Hugging Face pipeline.",
     )
-    parser.add_argument(
-        "--nj-per-gpu", type=int, default=1, help="Number of workers per GPU."
-    )
+    parser.add_argument("--nj-per-gpu", type=int, default=1, help="Number of workers per GPU.")
     parser.add_argument(
         "--chunk-size",
         type=int,
@@ -189,8 +187,8 @@ def _worker_setup(rank_queue):
 
     try:
         rank = rank_queue.get(timeout=10)
-    except Exception:
-        raise RuntimeError("Failed to get GPU rank from queue.")
+    except Exception as exc:
+        raise RuntimeError("Failed to get GPU rank from queue.") from exc
 
     assert torch.cuda.is_available(), "CUDA is required but not available."
     worker_device = torch.device(f"cuda:{rank}")
@@ -275,9 +273,7 @@ class SpeechEvalDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index):
         item = self.data_list[index]
-        waveform = load_eval_waveform(
-            item["wav_path"], sample_rate=16000, return_numpy=True
-        )
+        waveform = load_eval_waveform(item["wav_path"], sample_rate=16000, return_numpy=True)
         return {
             "array": waveform,
             "sampling_rate": 16000,
@@ -305,9 +301,7 @@ def run_eval_worker(data_chunk, language, batch_size):
 
         # Use the pipeline to infer batch
         # Note: We iterate through the iterator returned by pipe
-        iterator = worker_pipe(
-            dataset, generate_kwargs=generate_kwargs, batch_size=batch_size
-        )
+        iterator = worker_pipe(dataset, generate_kwargs=generate_kwargs, batch_size=batch_size)
 
         for i, out in enumerate(iterator):
             hypothesis = out["text"].strip()
@@ -324,9 +318,7 @@ def run_eval_worker(data_chunk, language, batch_size):
             metrics_buffer.append(m)
 
     except Exception:
-        logging.error(
-            f"Worker failed on chunk (Lang: {language}):\n{traceback.format_exc()}"
-        )
+        logging.error(f"Worker failed on chunk (Lang: {language}):\n{traceback.format_exc()}")
         return []
 
     return metrics_buffer
@@ -465,9 +457,7 @@ def main():
             futures = []
             for task in whisper_tasks:
                 futures.append(
-                    executor.submit(
-                        run_eval_worker, task["chunk"], task["lang"], args.batch_size
-                    )
+                    executor.submit(run_eval_worker, task["chunk"], task["lang"], args.batch_size)
                 )
 
             with tqdm(
@@ -497,9 +487,7 @@ def main():
         ) as executor:
             futures = []
             for chunk in paraformer_tasks:
-                futures.append(
-                    executor.submit(run_eval_worker_paraformer, chunk, args.batch_size)
-                )
+                futures.append(executor.submit(run_eval_worker_paraformer, chunk, args.batch_size))
 
             with tqdm(
                 total=len(zh_items),
@@ -576,13 +564,9 @@ def main():
     # Log Macro-average WER
     if len(per_lang_wers) > 1:
         macro_wer = np.mean(per_lang_wers)
-        logging.info(
-            f"Macro-average WER over {len(per_lang_wers)} languages: {macro_wer:.2f}%"
-        )
+        logging.info(f"Macro-average WER over {len(per_lang_wers)} languages: {macro_wer:.2f}%")
         if fout:
-            fout.write(
-                f"Macro-average WER over {len(per_lang_wers)} languages: {macro_wer:.2f}%\n"
-            )
+            fout.write(f"Macro-average WER over {len(per_lang_wers)} languages: {macro_wer:.2f}%\n")
 
     # Log overall stats
     if word_nums > 0:

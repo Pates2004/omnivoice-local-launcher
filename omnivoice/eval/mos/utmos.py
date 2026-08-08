@@ -45,9 +45,7 @@ worker_sr = 16000
 
 
 def get_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Calculate UTMOS score using UTMOS22Strong model."
-    )
+    parser = argparse.ArgumentParser(description="Calculate UTMOS score using UTMOS22Strong model.")
     parser.add_argument(
         "--wav-path",
         type=str,
@@ -109,7 +107,9 @@ def worker_init(
     # Limit CPU threads per worker
     torch.set_num_threads(2)
 
-    formatter = "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] [Worker %(process)d] %(message)s"
+    formatter = (
+        "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] [Worker %(process)d] %(message)s"
+    )
     logging.basicConfig(format=formatter, level=logging.INFO, force=True)
 
     rank = rank_queue.get() if rank_queue else -1
@@ -157,8 +157,7 @@ def run_utmos_worker(file_idx, wav_path, language_name):
 
     except Exception as e:
         error_detail = (
-            f"Error processing {wav_path}: {str(e)}\n"
-            f"Traceback:\n{traceback.format_exc()}"
+            f"Error processing {wav_path}: {str(e)}\nTraceback:\n{traceback.format_exc()}"
         )
         return file_idx, wav_path, language_name, error_detail, "error"
 
@@ -195,17 +194,15 @@ def main():
             language_name = s.get("language_name") or "unknown"
             eval_wav_path = os.path.join(args.wav_path, f"{s['id']}.{args.extension}")
             wav_files.append((eval_wav_path, language_name))
-    except Exception as e:
-        raise ValueError(f"Error reading test list {args.test_list}: {e}")
+    except Exception as exc:
+        raise ValueError(f"Error reading test list {args.test_list}: {exc}") from exc
 
     # Setup Parallel Processing
     num_gpus = torch.cuda.device_count()
     assert num_gpus > 0, "No GPU found. GPU is required."
     total_procs = num_gpus * args.nj_per_gpu
 
-    logging.info(
-        f"Starting evaluation with {total_procs} processes on {num_gpus} GPUs."
-    )
+    logging.info(f"Starting evaluation with {total_procs} processes on {num_gpus} GPUs.")
 
     manager = mp.Manager()
     rank_queue = manager.Queue()
@@ -233,13 +230,9 @@ def main():
         ) as executor:
             futures = []
             for i, (wav_path, language_name) in enumerate(wav_files):
-                futures.append(
-                    executor.submit(run_utmos_worker, i, wav_path, language_name)
-                )
+                futures.append(executor.submit(run_utmos_worker, i, wav_path, language_name))
 
-            pbar = tqdm(
-                as_completed(futures), total=len(wav_files), desc="Evaluating UTMOS"
-            )
+            pbar = tqdm(as_completed(futures), total=len(wav_files), desc="Evaluating UTMOS")
             lang_stats = {}
             for future in pbar:
                 idx, path, language_name, result, status = future.result()
@@ -252,16 +245,12 @@ def main():
                         if language_name == "unknown":
                             fout.write(f"{os.path.basename(path)}\t{result:.2f}\n")
                         else:
-                            fout.write(
-                                f"{language_name}\t{os.path.basename(path)}\t{result:.2f}\n"
-                            )
+                            fout.write(f"{language_name}\t{os.path.basename(path)}\t{result:.2f}\n")
                 else:
                     pbar.write(f"!!! FAILED [File {idx}]: {path} | {result}")
 
     except (Exception, KeyboardInterrupt) as e:
-        logging.critical(
-            f"An unrecoverable error occurred: {e}. Terminating all processes."
-        )
+        logging.critical(f"An unrecoverable error occurred: {e}. Terminating all processes.")
         detailed_error_info = traceback.format_exc()
         logging.error(f"--- DETAILED TRACEBACK ---\n{detailed_error_info}")
         sys.exit(1)

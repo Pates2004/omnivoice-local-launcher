@@ -201,9 +201,7 @@ def get_parser():
         default=8,
         help="Batch size for decoding with the Hugging Face pipeline.",
     )
-    parser.add_argument(
-        "--nj-per-gpu", type=int, default=1, help="Number of workers per GPU."
-    )
+    parser.add_argument("--nj-per-gpu", type=int, default=1, help="Number of workers per GPU.")
     parser.add_argument(
         "--chunk-size",
         type=int,
@@ -234,8 +232,8 @@ def process_init(rank_queue, model_card):
 
     try:
         rank = rank_queue.get(timeout=10)
-    except Exception:
-        raise RuntimeError("Failed to get GPU rank from queue.")
+    except Exception as exc:
+        raise RuntimeError("Failed to get GPU rank from queue.") from exc
 
     assert torch.cuda.is_available(), "CUDA is required but not available."
     worker_device = torch.device(f"cuda:{rank}")
@@ -300,9 +298,7 @@ def run_eval_worker(data_chunk, language, batch_size):
 
         # Use the pipeline to infer batch
         # OmniASR pipeline.transcribe returns a list of strings
-        transcriptions = worker_pipe.transcribe(
-            audio_paths, lang=lang_list, batch_size=batch_size
-        )
+        transcriptions = worker_pipe.transcribe(audio_paths, lang=lang_list, batch_size=batch_size)
 
         for i, hypo_text in enumerate(transcriptions):
             ref_item = data_chunk[i]
@@ -317,9 +313,7 @@ def run_eval_worker(data_chunk, language, batch_size):
             metrics_buffer.append(m)
 
     except Exception:
-        logging.error(
-            f"Worker failed on chunk (Lang: {language}):\n{traceback.format_exc()}"
-        )
+        logging.error(f"Worker failed on chunk (Lang: {language}):\n{traceback.format_exc()}")
         return []
 
     return metrics_buffer
@@ -408,9 +402,7 @@ def main():
         futures = []
         for task in tasks:
             futures.append(
-                executor.submit(
-                    run_eval_worker, task["chunk"], task["lang"], args.batch_size
-                )
+                executor.submit(run_eval_worker, task["chunk"], task["lang"], args.batch_size)
             )
 
         # Unified progress bar
@@ -484,13 +476,9 @@ def main():
     # Log Macro-average WER
     if len(per_lang_wers) > 1:
         macro_wer = np.mean(per_lang_wers)
-        logging.info(
-            f"Macro-average WER over {len(per_lang_wers)} languages: {macro_wer:.2f}%"
-        )
+        logging.info(f"Macro-average WER over {len(per_lang_wers)} languages: {macro_wer:.2f}%")
         if fout:
-            fout.write(
-                f"Macro-average WER over {len(per_lang_wers)} languages: {macro_wer:.2f}%\n"
-            )
+            fout.write(f"Macro-average WER over {len(per_lang_wers)} languages: {macro_wer:.2f}%\n")
         count_le_5 = sum(1 for w in per_lang_wers if w <= 5.0)
         count_le_10 = sum(1 for w in per_lang_wers if w <= 10.0)
         count_le_20 = sum(1 for w in per_lang_wers if w <= 20.0)

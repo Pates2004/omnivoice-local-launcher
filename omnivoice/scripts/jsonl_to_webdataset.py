@@ -77,12 +77,8 @@ from omnivoice.utils.common import str2bool
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Pack JSONL audio dataset into WebDataset shards."
-    )
-    parser.add_argument(
-        "--input", type=str, default="data.jsonl", help="Path to input JSONL file"
-    )
+    parser = argparse.ArgumentParser(description="Pack JSONL audio dataset into WebDataset shards.")
+    parser.add_argument("--input", type=str, default="data.jsonl", help="Path to input JSONL file")
     parser.add_argument(
         "--output",
         type=str,
@@ -107,9 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=1000,
         help="Number of samples per shard (default: 1000)",
     )
-    parser.add_argument(
-        "--sr", type=int, default=24000, help="Target sample rate (default: 24000)"
-    )
+    parser.add_argument("--sr", type=int, default=24000, help="Target sample rate (default: 24000)")
     parser.add_argument(
         "--shuffle",
         type=str2bool,

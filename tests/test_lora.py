@@ -31,7 +31,7 @@ import torch
 
 MODEL_PATH = os.environ.get("OMNIVOICE_TEST_MODEL_PATH")
 
-pytestmark = pytest.mark.skipif(
+requires_model = pytest.mark.skipif(
     not MODEL_PATH or not os.path.isdir(MODEL_PATH),
     reason="Set OMNIVOICE_TEST_MODEL_PATH to a local OmniVoice model directory to run these tests.",
 )
@@ -82,6 +82,7 @@ def test_training_config_lora_json_roundtrip(tmp_path):
     assert reloaded.lora_r == 4
 
 
+@requires_model
 def test_build_model_with_lora_freezes_base_and_keeps_io_heads_trainable(tmp_path):
     from omnivoice.training.builder import build_model_and_tokenizer
 
@@ -103,6 +104,7 @@ def test_build_model_with_lora_freezes_base_and_keeps_io_heads_trainable(tmp_pat
     assert any(n.endswith("self_attn.q_proj.base_layer.weight") for n in frozen)
 
 
+@requires_model
 def test_build_model_without_lora_is_plain_omnivoice(tmp_path):
     from omnivoice.models.omnivoice import OmniVoice
     from omnivoice.training.builder import build_model_and_tokenizer
@@ -114,6 +116,7 @@ def test_build_model_without_lora_is_plain_omnivoice(tmp_path):
     assert all(p.requires_grad for p in model.parameters())
 
 
+@requires_model
 def test_lora_forward_and_backward(tmp_path):
     from omnivoice.training.builder import build_model_and_tokenizer
 
@@ -125,9 +128,7 @@ def test_lora_forward_and_backward(tmp_path):
     audio_mask = torch.zeros(batch, seq_len, dtype=torch.bool)
     audio_mask[:, cond_len:] = True
     labels = torch.full((batch, num_codebooks, seq_len), -100, dtype=torch.long)
-    labels[:, :, cond_len:] = torch.randint(
-        0, 100, (batch, num_codebooks, seq_len - cond_len)
-    )
+    labels[:, :, cond_len:] = torch.randint(0, 100, (batch, num_codebooks, seq_len - cond_len))
 
     out = model(input_ids=input_ids, audio_mask=audio_mask, labels=labels)
     assert out.loss is not None and torch.isfinite(out.loss)
@@ -137,6 +138,7 @@ def test_lora_forward_and_backward(tmp_path):
     assert len(grad_params) > 0
 
 
+@requires_model
 def test_lora_checkpoint_save_and_resume(tmp_path):
     from accelerate import Accelerator
 
@@ -150,9 +152,7 @@ def test_lora_checkpoint_save_and_resume(tmp_path):
     accelerator = Accelerator(project_dir=output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=1e-4
-    )
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
     model, optimizer = accelerator.prepare(model, optimizer)
 
     save_checkpoint(accelerator, model, tokenizer, output_dir, step=1, keep_last_n=-1)
@@ -168,14 +168,13 @@ def test_lora_checkpoint_save_and_resume(tmp_path):
     # restoring accelerator state on top of it (mirrors full fine-tuning).
     model2, _tokenizer2 = build_model_and_tokenizer(config)
     accelerator2 = Accelerator(project_dir=output_dir)
-    optimizer2 = torch.optim.AdamW(
-        [p for p in model2.parameters() if p.requires_grad], lr=1e-4
-    )
+    optimizer2 = torch.optim.AdamW([p for p in model2.parameters() if p.requires_grad], lr=1e-4)
     model2, optimizer2 = accelerator2.prepare(model2, optimizer2)
     step = load_checkpoint(accelerator2, checkpoint_dir)
     assert step == 1
 
 
+@requires_model
 def test_merge_lora_produces_deployable_model(tmp_path):
     from accelerate import Accelerator
 
@@ -189,9 +188,7 @@ def test_merge_lora_produces_deployable_model(tmp_path):
     model, tokenizer = build_model_and_tokenizer(config)
     accelerator = Accelerator(project_dir=output_dir)
     os.makedirs(output_dir, exist_ok=True)
-    optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=1e-4
-    )
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
     model, optimizer = accelerator.prepare(model, optimizer)
     save_checkpoint(accelerator, model, tokenizer, output_dir, step=1, keep_last_n=-1)
     checkpoint_dir = os.path.join(output_dir, "checkpoint-1")
@@ -219,7 +216,5 @@ def test_merge_lora_produces_deployable_model(tmp_path):
     assert {"config.json", "model.safetensors", "audio_tokenizer"} <= merged_files
 
     # Merged model loads and runs like any plain OmniVoice checkpoint.
-    reloaded = OmniVoice.from_pretrained(
-        merged_dir, device_map="cpu", dtype=torch.float32
-    )
+    reloaded = OmniVoice.from_pretrained(merged_dir, device_map="cpu", dtype=torch.float32)
     assert type(reloaded) is OmniVoice

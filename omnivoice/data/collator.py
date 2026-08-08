@@ -75,9 +75,7 @@ class PaddingDataCollator:
                 torch.nn.functional.pad(s["audio_mask"], (0, pad), value=False)
             )  # [max_len]
             padded_position_ids.append(
-                torch.nn.functional.pad(
-                    torch.arange(length, dtype=torch.long), (0, pad), value=0
-                )
+                torch.nn.functional.pad(torch.arange(length, dtype=torch.long), (0, pad), value=0)
             )  # [max_len]
             valid[i, :length] = True
 
@@ -89,9 +87,7 @@ class PaddingDataCollator:
 
         # 4D bidirectional attention mask: mask[b, 0, i, j] = valid[b, j]
         # All query positions attend to all non-padding key positions.
-        attention_mask = (
-            valid[:, None, None, :].expand(B, 1, max_len, max_len).contiguous()
-        )
+        attention_mask = valid[:, None, None, :].expand(B, 1, max_len, max_len).contiguous()
 
         return {
             "input_ids": input_ids,  # [B, C, max_len]
@@ -113,12 +109,8 @@ class PackingDataCollator:
         input_ids = torch.cat(
             [s["input_ids"] for s in processed_samples], dim=1
         )  # [C, Total_Len], C is the number of codebook layers of the audio tokenizer
-        labels = torch.cat(
-            [s["labels"] for s in processed_samples], dim=1
-        )  # [C, Total_Len]
-        audio_mask = torch.cat(
-            [s["audio_mask"] for s in processed_samples], dim=0
-        )  # [Total_Len]
+        labels = torch.cat([s["labels"] for s in processed_samples], dim=1)  # [C, Total_Len]
+        audio_mask = torch.cat([s["audio_mask"] for s in processed_samples], dim=0)  # [Total_Len]
 
         position_ids = torch.cat(
             [torch.arange(s["length"], dtype=torch.long) for s in processed_samples],
@@ -135,13 +127,9 @@ class PackingDataCollator:
 
         labels = torch.nn.functional.pad(labels, pad=(0, pad_length), value=-100)
 
-        audio_mask = torch.nn.functional.pad(
-            audio_mask, pad=(0, pad_length), value=False
-        )
+        audio_mask = torch.nn.functional.pad(audio_mask, pad=(0, pad_length), value=False)
 
-        position_ids = torch.nn.functional.pad(
-            position_ids, pad=(0, pad_length), value=0
-        )
+        position_ids = torch.nn.functional.pad(position_ids, pad=(0, pad_length), value=0)
 
         return_list = {
             "input_ids": input_ids.unsqueeze(0),  # [1, C, L]
@@ -158,9 +146,7 @@ class PackingDataCollator:
 
         document_ids = torch.cat(document_ids_list, dim=0)
 
-        document_ids = torch.nn.functional.pad(
-            document_ids, pad=(0, pad_length), value=-1
-        )
+        document_ids = torch.nn.functional.pad(document_ids, pad=(0, pad_length), value=-1)
         return_list["document_ids"] = document_ids.unsqueeze(0)  # [1, L]
 
         return return_list

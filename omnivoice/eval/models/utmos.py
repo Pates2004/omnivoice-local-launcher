@@ -49,12 +49,8 @@ class UTMOS22Strong(nn.Module):
 
         # SSL/DataDomainEmb/JudgeIdEmb/BLSTM/Projection
         self.wav2vec2 = Wav2Vec2Model()
-        self.domain_emb = nn.Parameter(
-            data=torch.empty(1, feat_domain_emb), requires_grad=False
-        )
-        self.judge_emb = nn.Parameter(
-            data=torch.empty(1, feat_judge_emb), requires_grad=False
-        )
+        self.domain_emb = nn.Parameter(data=torch.empty(1, feat_domain_emb), requires_grad=False)
+        self.judge_emb = nn.Parameter(data=torch.empty(1, feat_judge_emb), requires_grad=False)
         self.blstm = nn.LSTM(
             input_size=feat_cat,
             hidden_size=feat_rnn_h,
@@ -100,13 +96,9 @@ class Wav2Vec2Model(nn.Module):
         super().__init__()  # pyright: ignore [reportUnknownMemberType]
 
         feat_h1, feat_h2 = 512, 768
-        feature_enc_layers = (
-            [(feat_h1, 10, 5)] + [(feat_h1, 3, 2)] * 4 + [(feat_h1, 2, 2)] * 2
-        )
+        feature_enc_layers = [(feat_h1, 10, 5)] + [(feat_h1, 3, 2)] * 4 + [(feat_h1, 2, 2)] * 2
 
-        self.feature_extractor = ConvFeatureExtractionModel(
-            conv_layers=feature_enc_layers
-        )  # pyright: ignore [reportGeneralTypeIssues]
+        self.feature_extractor = ConvFeatureExtractionModel(conv_layers=feature_enc_layers)  # pyright: ignore [reportGeneralTypeIssues]
         self.layer_norm = nn.LayerNorm(feat_h1)
         self.post_extract_proj = nn.Linear(feat_h1, feat_h2)
         self.dropout_input = nn.Dropout(0.1)
@@ -136,9 +128,7 @@ class ConvFeatureExtractionModel(nn.Module):
     def __init__(self, conv_layers: List[Tuple[int, int, int]]):
         super().__init__()  # pyright: ignore [reportUnknownMemberType]
 
-        def block(
-            n_in: int, n_out: int, k: int, stride: int, is_group_norm: bool = False
-        ):
+        def block(n_in: int, n_out: int, k: int, stride: int, is_group_norm: bool = False):
             if is_group_norm:
                 return nn.Sequential(
                     nn.Conv1d(n_in, n_out, k, stride=stride, bias=False),
@@ -212,9 +202,7 @@ class TransformerEncoder(nn.Module):
         x = self.layer_norm(x)
 
         # pad to the sequence length dimension
-        x, pad_length = pad_to_multiple(
-            x, self.required_seq_len_multiple, dim=-2, value=0
-        )
+        x, pad_length = pad_to_multiple(x, self.required_seq_len_multiple, dim=-2, value=0)
         if pad_length > 0:
             padding_mask = x.new_zeros((x.size(0), x.size(1)), dtype=torch.bool)
             padding_mask[:, -pad_length:] = True
@@ -285,9 +273,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
 
         feat = embedding_dim
 
-        self.self_attn = MultiheadAttention(
-            feat, num_attention_heads, attention_dropout
-        )
+        self.self_attn = MultiheadAttention(feat, num_attention_heads, attention_dropout)
         self.dropout1 = nn.Dropout(dropout)
         self.dropout2 = nn.Dropout(activation_dropout)
         self.dropout3 = nn.Dropout(dropout)
@@ -348,9 +334,7 @@ class MultiheadAttention(nn.Module):
             embed_dim_to_check=self.embed_dim,
             num_heads=self.num_heads,
             in_proj_weight=torch.empty([0]),
-            in_proj_bias=torch.cat(
-                (self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)
-            ),
+            in_proj_bias=torch.cat((self.q_proj.bias, self.k_proj.bias, self.v_proj.bias)),
             bias_k=None,
             bias_v=None,
             add_zero_attn=False,
@@ -358,9 +342,7 @@ class MultiheadAttention(nn.Module):
             out_proj_weight=self.out_proj.weight,
             out_proj_bias=self.out_proj.bias,
             training=False,
-            key_padding_mask=key_padding_mask.bool()
-            if key_padding_mask is not None
-            else None,
+            key_padding_mask=key_padding_mask.bool() if key_padding_mask is not None else None,
             need_weights=False,
             use_separate_proj_weight=True,
             q_proj_weight=self.q_proj.weight,

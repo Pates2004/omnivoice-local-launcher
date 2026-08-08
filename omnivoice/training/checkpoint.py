@@ -63,9 +63,7 @@ class TrainLogger:
                 disable=not self.accelerator.is_local_main_process,
             )
 
-    def update(
-        self, step: int, loss: Optional[float] = None, lr: Optional[float] = None
-    ):
+    def update(self, step: int, loss: Optional[float] = None, lr: Optional[float] = None):
         """
         Called every step to update the progress bar UI.
         """
@@ -151,8 +149,7 @@ def save_checkpoint(
         checkpoints = [
             d
             for d in os.listdir(output_dir)
-            if d.startswith("checkpoint-")
-            and os.path.isdir(os.path.join(output_dir, d))
+            if d.startswith("checkpoint-") and os.path.isdir(os.path.join(output_dir, d))
         ]
         # Sort by step number
         checkpoints.sort(key=lambda x: int(x.split("-")[-1]))

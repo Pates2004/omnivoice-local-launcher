@@ -98,9 +98,7 @@ def get_parser():
         default=16,
         help="Batch size for decoding with the Hugging Face pipeline.",
     )
-    parser.add_argument(
-        "--nj-per-gpu", type=int, default=1, help="Number of workers per GPU."
-    )
+    parser.add_argument("--nj-per-gpu", type=int, default=1, help="Number of workers per GPU.")
     return parser
 
 
@@ -192,8 +190,8 @@ def process_init(rank_queue, model_dir, lang):
 
     try:
         rank = rank_queue.get(timeout=10)
-    except Exception:
-        raise RuntimeError("Failed to get GPU rank from queue.")
+    except Exception as exc:
+        raise RuntimeError("Failed to get GPU rank from queue.") from exc
 
     assert torch.cuda.is_available(), "CUDA is required but not available."
     worker_device = torch.device(f"cuda:{rank}")
@@ -238,9 +236,7 @@ def run_eval_worker(data_chunk, lang, batch_size):
             ]
             generate_kwargs = {"language": "english", "task": "transcribe"}
 
-            iterator = worker_pipe(
-                dataset, generate_kwargs=generate_kwargs, batch_size=batch_size
-            )
+            iterator = worker_pipe(dataset, generate_kwargs=generate_kwargs, batch_size=batch_size)
 
             for i, out in enumerate(iterator):
                 hypothesis = out["text"].strip()
@@ -272,9 +268,7 @@ def run_eval_worker(data_chunk, lang, batch_size):
                     metrics_buffer.append(m)
 
     except Exception:
-        logging.error(
-            f"Worker failed on chunk (Lang: {lang}):\n{traceback.format_exc()}"
-        )
+        logging.error(f"Worker failed on chunk (Lang: {lang}):\n{traceback.format_exc()}")
         return []
 
     return metrics_buffer
@@ -339,9 +333,7 @@ def main():
     ) as executor:
         futures = []
         for chunk in tasks:
-            futures.append(
-                executor.submit(run_eval_worker, chunk, args.lang, args.batch_size)
-            )
+            futures.append(executor.submit(run_eval_worker, chunk, args.lang, args.batch_size))
 
         # Unified progress bar
         with tqdm(total=total_files, desc="Eval Progress", dynamic_ncols=True) as pbar:
@@ -361,9 +353,7 @@ def main():
         os.makedirs(os.path.dirname(args.decode_path), exist_ok=True)
         fout = open(args.decode_path, "w", encoding="utf8")
         logging.info(f"Saving detailed WER results to: {args.decode_path}")
-        fout.write(
-            "Name\tWER\tTruth\tHypothesis\tInsertions\tDeletions\tSubstitutions\n"
-        )
+        fout.write("Name\tWER\tTruth\tHypothesis\tInsertions\tDeletions\tSubstitutions\n")
 
     for res in results:
         wers.append(float(res["wer"]))
@@ -394,9 +384,7 @@ def main():
     logging.info(f"Processed {len(results)}/{total_files} files.")
     seedtts_wer_info = f"Seed-TTS WER (Avg of WERs): {wer_avg}%"
     wer_info = f"WER (Weighted): {wer_weighted}%"
-    detailed_info = (
-        f"Errors: {inse_sum} ins, {dele_sum} del, {subs_sum} sub / {word_nums} words"
-    )
+    detailed_info = f"Errors: {inse_sum} ins, {dele_sum} del, {subs_sum} sub / {word_nums} words"
     logging.info(seedtts_wer_info)
     logging.info(wer_info)
     logging.info(detailed_info)

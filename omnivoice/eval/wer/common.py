@@ -68,9 +68,7 @@ def process_one(hypothesis: str, truth: str, post_process, lang: str = None) -> 
 
 def log_metrics(fout, prefix, i_list, d_list, s_list, w_total, ndigits=2):
     """Log weighted WER metrics for a subset of results."""
-    metrics_wer = round(
-        (np.sum(s_list) + np.sum(d_list) + np.sum(i_list)) / w_total * 100, ndigits
-    )
+    metrics_wer = round((np.sum(s_list) + np.sum(d_list) + np.sum(i_list)) / w_total * 100, ndigits)
     metrics_inse = np.sum(i_list)
     metrics_dele = np.sum(d_list)
     metrics_subs = np.sum(s_list)

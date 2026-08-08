@@ -26,13 +26,23 @@ with shape ``(C, T)`` (channels-first).
 
 import io
 import logging
+import warnings
 
 import numpy as np
 import soundfile as sf
 import torch
 import torchaudio
-from pydub import AudioSegment
-from pydub.silence import detect_leading_silence, detect_nonsilent, split_on_silence
+
+with warnings.catch_warnings():
+    # Pydub probes for an external converter during import even though the
+    # in-memory AudioSegment operations used below do not require FFmpeg.
+    warnings.filterwarnings(
+        "ignore",
+        message="Couldn't find ffmpeg or avconv.*",
+        category=RuntimeWarning,
+    )
+    from pydub import AudioSegment
+    from pydub.silence import detect_leading_silence, detect_nonsilent, split_on_silence
 
 logger = logging.getLogger(__name__)
 
@@ -275,9 +285,7 @@ def trim_long_audio(
         return audio
 
     seg = numpy_to_audiosegment(audio, sampling_rate)
-    nonsilent = detect_nonsilent(
-        seg, min_silence_len=100, silence_thresh=-40, seek_step=10
-    )
+    nonsilent = detect_nonsilent(seg, min_silence_len=100, silence_thresh=-40, seek_step=10)
     if not nonsilent:
         return audio
 

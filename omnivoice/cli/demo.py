@@ -117,17 +117,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--device", default=None, help="Device to use. Auto-detected if not specified."
     )
     parser.add_argument("--ip", default="0.0.0.0", help="Server IP (default: 0.0.0.0).")
-    parser.add_argument(
-        "--port", type=int, default=7860, help="Server port (default: 7860)."
-    )
+    parser.add_argument("--port", type=int, default=7860, help="Server port (default: 7860).")
     parser.add_argument(
         "--root-path",
         default=None,
         help="Root path for reverse proxy.",
     )
-    parser.add_argument(
-        "--share", action="store_true", default=False, help="Create public link."
-    )
+    parser.add_argument("--share", action="store_true", default=False, help="Create public link.")
     parser.add_argument(
         "--no-asr",
         action="store_true",
@@ -138,8 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--asr-model",
         default="openai/whisper-large-v3-turbo",
-        help="ASR model path or HuggingFace repo id"
-        " (default: openai/whisper-large-v3-turbo).",
+        help="ASR model path or HuggingFace repo id (default: openai/whisper-large-v3-turbo).",
     )
     return parser
 
@@ -185,9 +180,7 @@ def build_demo(
 
         lang = language if (language and language != "Auto") else None
 
-        kw: Dict[str, Any] = dict(
-            text=text.strip(), language=lang, generation_config=gen_config
-        )
+        kw: Dict[str, Any] = dict(text=text.strip(), language=lang, generation_config=gen_config)
 
         if speed is not None and float(speed) != 1.0:
             kw["speed"] = float(speed)
@@ -255,9 +248,7 @@ def build_demo(
             du = gr.Number(
                 value=None,
                 label="Duration (seconds)",
-                info=(
-                    "Leave empty to use speed. Set a fixed duration to override speed."
-                ),
+                info=("Leave empty to use speed. Set a fixed duration to override speed."),
             )
             ns = gr.Slider(
                 4,
@@ -356,9 +347,7 @@ by Xiaomi AI Lab Next-gen Kaldi team.
                         )
                         vc_status = gr.Textbox(label="Status / 状态", lines=2)
 
-                def _clone_fn(
-                    text, lang, ref_aud, ref_text, instruct, ns, gs, dn, sp, du, pp, po
-                ):
+                def _clone_fn(text, lang, ref_aud, ref_text, instruct, ns, gs, dn, sp, du, pp, po):
                     return _gen(
                         text,
                         lang,

@@ -252,15 +252,16 @@ def extract_seamless_m4t_features(
     return_tensors: Optional[str] = "pt",
     return_attention_mask: bool = True,
     padding_value: float = 0.0,
-    device: torch.device = torch.device("cpu"),
+    device: Optional[torch.device] = None,
 ) -> Dict[str, ReturnType]:
     """Extract SeamlessM4T features using Torch-only operators."""
+    if device is None:
+        device = torch.device("cpu")
     if not isinstance(raw_speech, list):
         raw_speech = [raw_speech]
 
     processed_speech = [
-        torch.as_tensor(sample, dtype=torch.float32, device=device)
-        for sample in raw_speech
+        torch.as_tensor(sample, dtype=torch.float32, device=device) for sample in raw_speech
     ]
 
     features: List[torch.Tensor] = []
@@ -303,15 +304,11 @@ def extract_seamless_m4t_features(
         elif max_length is not None:
             target_length = max_length
         else:
-            raise ValueError(
-                "max_length must be provided when padding_strategy is not 'longest'"
-            )
+            raise ValueError("max_length must be provided when padding_strategy is not 'longest'")
 
         if pad_to_multiple_of is not None:
             target_length = (
-                (target_length + pad_to_multiple_of - 1)
-                // pad_to_multiple_of
-                * pad_to_multiple_of
+                (target_length + pad_to_multiple_of - 1) // pad_to_multiple_of * pad_to_multiple_of
             )
 
         batch_size = len(features)
@@ -412,9 +409,7 @@ class SpeechDenoisingProcessor:
         device: str,
     ) -> None:
         self.device = torch.device(device)
-        self.feature_extractor = torch.jit.load(
-            feature_extractor_path, map_location=self.device
-        )
+        self.feature_extractor = torch.jit.load(feature_extractor_path, map_location=self.device)
         self.decoder = torch.jit.load(decoder_path, map_location=self.device)
         self.feature_extractor.eval()
         self.decoder.eval()
@@ -432,11 +427,9 @@ class SpeechDenoisingProcessor:
     ) -> List[torch.Tensor]:
         if expected_lengths is None:
             expected_lengths: list[int] = []
-            for waveform, sample_rate in zip(waveforms, sample_rates):
+            for waveform, sample_rate in zip(waveforms, sample_rates, strict=True):
                 duration_seconds = waveform.shape[-1] / float(sample_rate)
-                expected_lengths.append(
-                    int(round(duration_seconds * SIDON_OUTPUT_SAMPLE_RATE))
-                )
+                expected_lengths.append(int(round(duration_seconds * SIDON_OUTPUT_SAMPLE_RATE)))
         waveforms = torch.nn.functional.pad(waveforms, (0, 24000))
 
         features = extract_seamless_m4t_features(
@@ -445,9 +438,9 @@ class SpeechDenoisingProcessor:
             padding_value=1.0,
             device=self.device,
         )
-        feature_tensor = self.feature_extractor(
-            features["input_features"].to(self.device)
-        )["last_hidden_state"]
+        feature_tensor = self.feature_extractor(features["input_features"].to(self.device))[
+            "last_hidden_state"
+        ]
         restored_waveforms = self.decoder(feature_tensor.transpose(1, 2)).cpu()
 
         results: List[torch.Tensor] = []
@@ -458,9 +451,7 @@ class SpeechDenoisingProcessor:
             if target_length > 0 and current_length != target_length:
                 diff = target_length - current_length
                 if diff > 0:
-                    restored_waveform = torch.nn.functional.pad(
-                        restored_waveform, (0, diff)
-                    )
+                    restored_waveform = torch.nn.functional.pad(restored_waveform, (0, diff))
                 elif diff < 0:
                     restored_waveform = restored_waveform[:target_length]
             results.append(restored_waveform.contiguous())
@@ -497,9 +488,7 @@ class CollateFunction:
             metadata.append(sample["label"])
         waveforms = torch.nn.utils.rnn.pad_sequence(waveforms, batch_first=True)
 
-        return CollatedBatch(
-            keys=keys, waveforms=waveforms, durations=durations, metadata=metadata
-        )
+        return CollatedBatch(keys=keys, waveforms=waveforms, durations=durations, metadata=metadata)
 
 
 @dataclass
@@ -558,7 +547,9 @@ def subprocess_worker_main():
     Expected environment: CUDA_VISIBLE_DEVICES already set by the parent.
     Receives initargs via stdin, then processes batches in a loop.
     """
-    formatter = "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] [Worker PID %(process)d] %(message)s"
+    formatter = (
+        "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] [Worker PID %(process)d] %(message)s"
+    )
     logging.basicConfig(format=formatter, level=logging.INFO, force=True)
 
     initargs = _subprocess_recv()
@@ -592,9 +583,7 @@ def subprocess_worker_main():
         try:
             cleaned_waveforms = processor.process_batch(
                 batch.waveforms,
-                expected_lengths=[
-                    round(d * SIDON_OUTPUT_SAMPLE_RATE) for d in batch.durations
-                ],
+                expected_lengths=[round(d * SIDON_OUTPUT_SAMPLE_RATE) for d in batch.durations],
             )
             cleaned_cpu = [w.cpu() for w in cleaned_waveforms]
             result = {
@@ -793,19 +782,13 @@ def main() -> None:
                 )
                 assert os.path.exists(tar_path), f"File {tar_path} does not exist."
                 assert os.path.exists(jsonl_path), f"File {jsonl_path} does not exist."
-                assert jsonl_path.endswith(".jsonl"), (
-                    f"File {jsonl_path} is not a .jsonl file."
-                )
-                if (
-                    args.num_machines > 1
-                    and line_id % args.num_machines != args.machine_index
-                ):
+                assert jsonl_path.endswith(".jsonl"), f"File {jsonl_path} is not a .jsonl file."
+                if args.num_machines > 1 and line_id % args.num_machines != args.machine_index:
                     continue
                 total_samples += num_items
                 manifests.append((tar_path, jsonl_path, num_items, duration))
         logging.info(
-            f"Total shards: {manifest_num_lines}, "
-            f"Shards for current index: {len(manifests)}"
+            f"Total shards: {manifest_num_lines}, Shards for current index: {len(manifests)}"
         )
         base_dataset = WebDatasetReader(
             manifests=manifests,
@@ -931,16 +914,14 @@ def main() -> None:
         except Exception as exc:
             write_error_count += 1
             failed_ids.append(key)
-            error_logger.error(
-                json.dumps({"id": key, "reason": str(exc)}, ensure_ascii=False)
-            )
+            error_logger.error(json.dumps({"id": key, "reason": str(exc)}, ensure_ascii=False))
             logging.error(f"Write failed for sample {key}: {exc}")
 
     def handle_result(result):
         nonlocal processed_count, error_count
         if result["status"] == "success":
             for key, cleaned, metadata in zip(
-                result["keys"], result["results"], result["metadata"]
+                result["keys"], result["results"], result["metadata"], strict=True
             ):
                 if tar_writer is None or shard_sample_count >= samples_per_shard:
                     open_new_shard()
@@ -957,12 +938,9 @@ def main() -> None:
                     )
                 )
             if not args.skip_errors:
-                raise RuntimeError(
-                    f"Batch starting with {result['keys'][0]} failed - terminating"
-                )
+                raise RuntimeError(f"Batch starting with {result['keys'][0]} failed - terminating")
             logging.warning(
-                f"Skipping failed batch starting with {result['keys'][0]}: "
-                f"{result['error']}"
+                f"Skipping failed batch starting with {result['keys'][0]}: {result['error']}"
             )
 
     # ── Main processing loop ──
@@ -1036,13 +1014,9 @@ def main() -> None:
     if total_failed > 0:
         logging.info(f"Error details: {error_log_path}")
     if failed_ids and args.skip_errors:
-        logging.warning(
-            f"Failed sample IDs (count: {len(failed_ids)}): {failed_ids[:100]}..."
-        )
+        logging.warning(f"Failed sample IDs (count: {len(failed_ids)}): {failed_ids[:100]}...")
     if write_error_count > 0 and not args.skip_errors:
-        raise RuntimeError(
-            f"{write_error_count} samples failed to write - check logs for details"
-        )
+        raise RuntimeError(f"{write_error_count} samples failed to write - check logs for details")
 
 
 if __name__ == "__main__":

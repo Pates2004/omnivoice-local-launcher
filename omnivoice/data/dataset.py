@@ -35,7 +35,6 @@ Key classes:
 - ``SampleDecoder``: Decodes individual samples (audio or tokens + labels).
 """
 
-import io
 import json
 import logging
 import os
@@ -141,17 +140,13 @@ def prepare_data_manifests_from_json(
             for manifest_path in manifest_paths:
                 # assert manifest_path is a file
                 assert os.path.isfile(manifest_path), f"{manifest_path} is not a file."
-                train_manifests.extend(
-                    webdataset_manifest_reader(manifest_path) * repeat
-                )
+                train_manifests.extend(webdataset_manifest_reader(manifest_path) * repeat)
         if "dev" in data:
             for item in data["dev"]:
                 manifest_paths = item["manifest_path"]
                 repeat = item.get("repeat", 1)
                 for manifest_path in manifest_paths:
-                    dev_manifests.extend(
-                        webdataset_manifest_reader(manifest_path) * repeat
-                    )
+                    dev_manifests.extend(webdataset_manifest_reader(manifest_path) * repeat)
     return train_manifests, dev_manifests
 
 
@@ -220,10 +215,7 @@ class SampleDecoder:
         return_dict = {}
         src = sample["__url__"]
         key = sample["__key__"]
-        if (
-            self.label_dataset is None
-            or self.label_dataset.path != self.tar_to_label[src]
-        ):
+        if self.label_dataset is None or self.label_dataset.path != self.tar_to_label[src]:
             self.label_dataset = LabelDataset(self.tar_to_label[src])
 
         audio = torch.empty(0)
@@ -234,9 +226,7 @@ class SampleDecoder:
             for ext in self.audio_format:
                 if ext in sample:
                     # load audio (1, num_samples)
-                    audio = load_audio_webdataset(
-                        sample[ext], sample_rate=self.sample_rate
-                    )
+                    audio = load_audio_webdataset(sample[ext], sample_rate=self.sample_rate)
                     if self.normalize_audio:
                         audio = (audio / (audio.abs().max() + 1e-7)) * 0.9
                     break
@@ -391,9 +381,7 @@ class JsonlDatasetReader(IterableDataReader):
         if self.shuffle:
             random.seed(self.shuffle_seed)
             random.shuffle(entries)
-            logging.info(
-                f"Shuffled {len(entries)} JSONL entries (seed={self.shuffle_seed})"
-            )
+            logging.info(f"Shuffled {len(entries)} JSONL entries (seed={self.shuffle_seed})")
         return entries
 
     def _stream_lines(self):
@@ -424,9 +412,7 @@ class JsonlDatasetReader(IterableDataReader):
         for meta in source:
             audio_path = meta.get("audio_path")
             if not audio_path or not os.path.exists(audio_path):
-                logging.warning(
-                    f"Skipping {meta.get('id', '?')}: audio_path missing or not found"
-                )
+                logging.warning(f"Skipping {meta.get('id', '?')}: audio_path missing or not found")
                 continue
             try:
                 waveform = torch.from_numpy(load_audio(audio_path, self.sample_rate))
@@ -492,9 +478,7 @@ class LazyIteratorMultiplexer:
         self.stop_early = stop_early
         self.seed = seed
 
-        assert len(self.iterators) > 1, (
-            "There have to be at least two iterables to multiplex."
-        )
+        assert len(self.iterators) > 1, "There have to be at least two iterables to multiplex."
 
         if weights is None:
             if all(hasattr(it, "__len__") for it in self.iterators):
@@ -523,9 +507,10 @@ class LazyIteratorMultiplexer:
             active_indexes, active_weights = zip(
                 *[
                     (i, w)
-                    for i, (is_exhausted, w) in enumerate(zip(exhausted, self.weights))
+                    for i, (is_exhausted, w) in enumerate(zip(exhausted, self.weights, strict=True))
                     if not is_exhausted
-                ]
+                ],
+                strict=True,
             )
             idx = rng.choices(active_indexes, weights=active_weights, k=1)[0]
             selected = iters[idx]

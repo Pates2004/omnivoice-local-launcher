@@ -116,17 +116,13 @@ def get_parser():
         "--audio_chunk_duration",
         type=float,
         default=15.0,
-        help="Maximum duration of audio chunk (in seconds) for splitting. "
-        '"Not split" if <= 0.',
+        help='Maximum duration of audio chunk (in seconds) for splitting. "Not split" if <= 0.',
     )
     parser.add_argument(
         "--audio_chunk_threshold",
         type=float,
         default=30.0,
-        help=(
-            "The duration threshold (in seconds) to decide"
-            " whether to split audio into chunks."
-        ),
+        help=("The duration threshold (in seconds) to decide whether to split audio into chunks."),
     )
     parser.add_argument(
         "--batch_duration",
@@ -196,8 +192,7 @@ def get_parser():
         "--lang_id",
         type=str,
         default=None,
-        help="Language id to use when test_list JSONL entries do not contain "
-        "a language_id field.",
+        help="Language id to use when test_list JSONL entries do not contain a language_id field.",
     )
     return parser
 
@@ -214,8 +209,7 @@ def process_init(rank_queue, model_checkpoint, warmup=0, enable_flashinfer=False
     torch.set_num_interop_threads(2)
 
     formatter = (
-        "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] "
-        "[Worker %(process)d] %(message)s"
+        "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] [Worker %(process)d] %(message)s"
     )
     logging.basicConfig(format=formatter, level=logging.INFO, force=True)
 
@@ -250,7 +244,7 @@ def process_init(rank_queue, model_checkpoint, warmup=0, enable_flashinfer=False
             torch.randn(1, SAMPLING_RATE),
             SAMPLING_RATE,
         )  # 1s dummy audio
-        for i in range(warmup):
+        for _ in range(warmup):
             worker_model.generate(
                 text=["hello"],
                 language=["en"],
@@ -365,8 +359,7 @@ def cluster_samples_by_batch_size(
     sorted_samples = [s for s, _ in sample_with_duration]
 
     batches = [
-        sorted_samples[i : i + batch_size]
-        for i in range(0, len(sorted_samples), batch_size)
+        sorted_samples[i : i + batch_size] for i in range(0, len(sorted_samples), batch_size)
     ]
     logging.info(
         f"Split {len(samples)} samples into {len(batches)} batches "
@@ -406,9 +399,7 @@ def run_inference_batch(
     audios = worker_model.generate(
         text=texts,
         language=langs,
-        ref_audio=ref_audio_paths
-        if any(p is not None for p in ref_audio_paths)
-        else None,
+        ref_audio=ref_audio_paths if any(p is not None for p in ref_audio_paths) else None,
         ref_text=ref_texts if any(t is not None for t in ref_texts) else None,
         duration=durations if any(d is not None for d in durations) else None,
         speed=speeds if any(s is not None for s in speeds) else None,
@@ -418,7 +409,7 @@ def run_inference_batch(
     batch_synth_time = time.time() - start_time
 
     results = []
-    for save_name, audio in zip(save_names, audios):
+    for save_name, audio in zip(save_names, audios, strict=True):
         save_path = os.path.join(res_dir, save_name + ".wav")
         sf.write(save_path, audio, worker_model.sampling_rate)
         audio_duration = audio.shape[-1] / worker_model.sampling_rate
@@ -444,14 +435,11 @@ def main():
 
     device_type, num_devices = get_best_device_with_count()
     if device_type == "cpu":
-        logging.warning(
-            "No GPU found. Falling back to CPU inference. This might be slow."
-        )
+        logging.warning("No GPU found. Falling back to CPU inference. This might be slow.")
 
     num_processes = num_devices * args.nj_per_gpu
     logging.info(
-        f"Using {device_type} ({num_devices} device(s))."
-        f" Spawning {num_processes} worker processes."
+        f"Using {device_type} ({num_devices} device(s)). Spawning {num_processes} worker processes."
     )
 
     manager = mp.Manager()
@@ -503,24 +491,18 @@ def main():
                     continue
                 if args.batch_size > 0:
                     batches.extend(
-                        cluster_samples_by_batch_size(
-                            subset, duration_estimator, args.batch_size
-                        )
+                        cluster_samples_by_batch_size(subset, duration_estimator, args.batch_size)
                     )
                 else:
                     batches.extend(
-                        cluster_samples_by_duration(
-                            subset, duration_estimator, args.batch_duration
-                        )
+                        cluster_samples_by_duration(subset, duration_estimator, args.batch_duration)
                     )
 
             args_dict = vars(args)
 
             for batch in batches:
                 futures.append(
-                    executor.submit(
-                        run_inference_batch, batch_samples=batch, **args_dict
-                    )
+                    executor.submit(run_inference_batch, batch_samples=batch, **args_dict)
                 )
 
             for future in tqdm(
@@ -528,7 +510,7 @@ def main():
             ):
                 try:
                     result = future.result()
-                    for s_name, synth_time, audio_dur, status in result:
+                    for s_name, synth_time, audio_dur, _status in result:
                         total_synthesis_time.append(synth_time)
                         total_audio_duration.append(audio_dur)
                         rtf = synth_time / audio_dur if audio_dur > 0 else float("inf")
@@ -542,9 +524,7 @@ def main():
                     logging.error(f"Detailed error: {detailed_error}")
 
     except (Exception, KeyboardInterrupt) as e:
-        logging.critical(
-            f"An unrecoverable error occurred: {e}. Terminating all processes."
-        )
+        logging.critical(f"An unrecoverable error occurred: {e}. Terminating all processes.")
         detailed_error_info = traceback.format_exc()
         logging.error(f"--- DETAILED TRACEBACK ---\n{detailed_error_info}")
         os.killpg(os.getpgid(os.getpid()), signal.SIGKILL)

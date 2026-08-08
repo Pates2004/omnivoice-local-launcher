@@ -149,9 +149,7 @@ class OmniTrainer:
                 level=logging.INFO,
                 handlers=[
                     logging.StreamHandler(sys.stdout),
-                    logging.FileHandler(
-                        os.path.join(self.config.output_dir, "train.log")
-                    ),
+                    logging.FileHandler(os.path.join(self.config.output_dir, "train.log")),
                 ],
             )
         else:
@@ -260,9 +258,7 @@ class OmniTrainer:
             self.train_dataloader.dataset.set_epoch(self.epoch)
 
         # Logger
-        train_logger = TrainLogger(
-            self.accelerator, self.config.steps, self.config.logging_steps
-        )
+        train_logger = TrainLogger(self.accelerator, self.config.steps, self.config.logging_steps)
         train_logger.start(self.global_step)
 
         self.model.train()
@@ -309,23 +305,18 @@ class OmniTrainer:
 
                     # Logging
                     current_lr = self.lr_scheduler.get_last_lr()[0]
-                    train_logger.update(
-                        step=self.global_step, loss=loss.item(), lr=current_lr
-                    )
+                    train_logger.update(step=self.global_step, loss=loss.item(), lr=current_lr)
 
                     if self.global_step % self.config.logging_steps == 0:
                         elapsed = time.time() - logging_start_time
                         steps_per_sec = (
-                            (self.global_step - logging_start_step) / elapsed
-                            if elapsed > 0
-                            else 0
+                            (self.global_step - logging_start_step) / elapsed if elapsed > 0 else 0
                         )
 
                         tr_loss_scalar = self.accelerator.gather(tr_loss).mean().item()
                         current_interval_loss = tr_loss_scalar - logging_loss_scalar
                         avg_loss = current_interval_loss / (
-                            self.config.logging_steps
-                            * self.config.gradient_accumulation_steps
+                            self.config.logging_steps * self.config.gradient_accumulation_steps
                         )
                         logging_loss_scalar = tr_loss_scalar
 

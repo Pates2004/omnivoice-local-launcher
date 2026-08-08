@@ -186,9 +186,7 @@ def chunk_text_punctuation(
     # 4. Post-process: Check for undersized chunks and merge them
     #  with the previous chunk or next chunk (if it's the first chunk).
     if min_chunk_len is not None:
-        first_chunk_short_flag = (
-            len(merged_chunks) > 0 and len(merged_chunks[0]) < min_chunk_len
-        )
+        first_chunk_short_flag = len(merged_chunks) > 0 and len(merged_chunks[0]) < min_chunk_len
         final_chunks = []
         for i, chunk in enumerate(merged_chunks):
             if i == 1 and first_chunk_short_flag:
@@ -204,9 +202,7 @@ def chunk_text_punctuation(
     else:
         final_chunks = merged_chunks
 
-    chunk_strings = [
-        "".join(chunk).strip() for chunk in final_chunks if "".join(chunk).strip()
-    ]
+    chunk_strings = ["".join(chunk).strip() for chunk in final_chunks if "".join(chunk).strip()]
     return chunk_strings
 
 
@@ -357,9 +353,7 @@ def _normalize_segment(fn: Callable[[str], str], segment: str) -> str:
     return lead + core + trail
 
 
-def _apply_with_protection(
-    text: str, fn: Callable[[str], str], protect_pinyin: bool
-) -> str:
+def _apply_with_protection(text: str, fn: Callable[[str], str], protect_pinyin: bool) -> str:
     """Run ``fn`` on ``text`` while holding out protected control spans."""
     spans = [m.span() for m in _BRACKET_TAG_RE.finditer(text)]
     if protect_pinyin:
@@ -424,6 +418,4 @@ def normalize_text(text: str, language: Optional[str] = None) -> str:
         normalizer = _get_en_normalizer()
         return _apply_with_protection(text, normalizer.normalize, protect_pinyin=False)
     # Other languages: best-effort integer conversion via num2words.
-    return _apply_with_protection(
-        text, lambda s: _num2words_segment(s, code), protect_pinyin=False
-    )
+    return _apply_with_protection(text, lambda s: _num2words_segment(s, code), protect_pinyin=False)

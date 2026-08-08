@@ -1,32 +1,84 @@
-# OmniVoice Local Launcher 🚀
+# OmniVoice Local Launcher
 
-OmniVoice Local Launcher is a standalone, one-click Windows installer and launcher for the state-of-the-art [OmniVoice](https://github.com/k2-fsa/OmniVoice) Text-to-Speech (TTS) model. Designed with a streamlined "Applio-like" experience, it automatically handles dependencies, virtual environments, and PyTorch installations, dropping you straight into the OmniVoice web interface without any hassle.
+One-click Windows installer and launcher for the
+[OmniVoice](https://github.com/k2-fsa/OmniVoice) Gradio web interface.
 
-## Key Features
+## What the launcher does
 
-- **1-Click Installation**: Simply run the `start.bat` file. The launcher automatically creates a Python virtual environment and installs all necessary packages (including PyTorch with CUDA support).
-- **Auto-Browser Launch**: Once the local server starts, it automatically opens your default web browser to the OmniVoice interface.
-- **Portability**: Everything is installed directly within the folder via a local `venv`, keeping your global Python environment clean.
+Run `start.bat`. On the first launch it detects compatible 64-bit Python
+3.10-3.13 installations and offers two isolated choices:
 
-## Prerequisites
+1. download Python 3.12.10 into `env/` for this application only (recommended),
+2. create `venv/` using a compatible system Python.
 
-- **Python 3.10+** (Make sure Python is added to your PATH).
-- **NVIDIA GPU** (Recommended for fast inference, as the launcher automatically installs PyTorch with CUDA).
+If Python is not installed, the launcher can either download the portable
+runtime or open the official Windows Python download page. The selected mode
+is remembered locally and can later be changed with:
 
-## Usage
+```bat
+start.bat -Mode Portable
+start.bat -Mode System
+```
 
-1. **Download the Repository**:
-   Clone or download this repository to your local machine.
+The launcher then:
 
-2. **Run the Launcher**:
-   Double-click `start.bat`.
+- validates Python before using it;
+- verifies the official portable archive checksum before extraction;
+- installs the CUDA 12.8 build of PyTorch when `nvidia-smi` reports an NVIDIA
+  GPU, or the CPU build otherwise;
+- installs this checkout in editable mode;
+- runs `pip check` and imports the complete runtime before reporting success;
+- repairs missing or outdated dependencies on the next launch;
+- starts the web UI at `http://127.0.0.1:7860` and opens the browser only after
+  the server begins listening;
+- returns a non-zero exit code and a visible error when any required step fails.
 
-   - *First run*: The script will take a few minutes to download and install PyTorch and the OmniVoice dependencies.
-   - *Subsequent runs*: The script will instantly activate the virtual environment and start the web UI.
+The web launcher does not use wxPython; wxPython belongs to the separate
+OmniSonic desktop application. This repository installs Gradio instead.
+This launcher repository does not publish the bundled upstream engine to PyPI.
 
-3. **Use OmniVoice**:
-   Your browser will open automatically to `http://127.0.0.1:7860`. You can now use the state-of-the-art OmniVoice model for zero-shot text-to-speech, voice cloning, and voice design!
+## Requirements
+
+- Windows 10 or newer with Windows PowerShell 5.1;
+- internet access for the first installation and model download;
+- an NVIDIA GPU is recommended, but CPU installation is supported and selected
+  automatically when NVIDIA hardware is not available.
+
+Portable Python and `venv` are both stored inside or directly below this
+repository, so the system Python installation is never modified.
+
+## Diagnostics
+
+The launcher has a non-destructive self-test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\launcher.ps1 -SelfTest
+```
+
+Maintainers can validate creation of either Python environment without
+installing AI dependencies or starting the server:
+
+```powershell
+.\launcher.ps1 -Mode System -BootstrapOnly
+.\launcher.ps1 -Mode Portable -BootstrapOnly
+```
+
+To install and validate every dependency without starting the web server:
+
+```powershell
+.\launcher.ps1 -Mode Portable -InstallOnly
+```
+
+To start the server without automatically opening a browser:
+
+```bat
+start.bat -NoBrowser
+```
 
 ## Credits
-- Launcher wrapper built by Pates2004.
-- Core TTS Engine: [OmniVoice](https://github.com/k2-fsa/OmniVoice) by the k2-fsa team.
+
+- Launcher wrapper: Pates2004.
+- TTS engine: Han Zhu and the
+  [k2-fsa OmniVoice contributors](https://github.com/k2-fsa/OmniVoice).
+
+Licensed under Apache-2.0. See [LICENSE](LICENSE).

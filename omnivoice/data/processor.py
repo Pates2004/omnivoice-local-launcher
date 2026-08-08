@@ -108,15 +108,10 @@ class OmniVoiceSampleProcessor:
         style_inputs = self.text_tokenizer(style, return_tensors="pt").input_ids.repeat(
             self.num_channels, 1
         )
-        style_labels = torch.full(
-            style_inputs.shape, -100
-        )  # Style prompt does not compute loss
+        style_labels = torch.full(style_inputs.shape, -100)  # Style prompt does not compute loss
 
         # --- Text ---
-        if (
-            "text_pinyin" in sample["label"]
-            and random.uniform(0, 1) < self.use_pinyin_ratio
-        ):
+        if "text_pinyin" in sample["label"] and random.uniform(0, 1) < self.use_pinyin_ratio:
             text = sample["label"]["text_pinyin"]
         else:
             text = sample["label"]["text"]
@@ -141,9 +136,7 @@ class OmniVoiceSampleProcessor:
         maskable_region = audio_tokens[:, prompt_length:]
         token_mask = torch.rand(maskable_region.shape) < mask_ratio
         audio_inputs[:, prompt_length:][token_mask] = self.audio_mask_id
-        audio_labels[:, prompt_length:][
-            ~token_mask
-        ] = -100  # Only compute loss on masked tokens
+        audio_labels[:, prompt_length:][~token_mask] = -100  # Only compute loss on masked tokens
         if not drop_cond:
             audio_labels[:, :prompt_length] = -100  # No loss on prompt region
 
@@ -225,9 +218,7 @@ class OmniVoiceSimpleSampleProcessor:
         maskable_region = audio_tokens[:, prompt_length:]
         token_mask = torch.rand(maskable_region.shape) < mask_ratio
         audio_inputs[:, prompt_length:][token_mask] = self.audio_mask_id
-        audio_labels[:, prompt_length:][
-            ~token_mask
-        ] = -100  # Only compute loss on masked tokens
+        audio_labels[:, prompt_length:][~token_mask] = -100  # Only compute loss on masked tokens
 
         if not drop_cond:
             # No loss on prompt region

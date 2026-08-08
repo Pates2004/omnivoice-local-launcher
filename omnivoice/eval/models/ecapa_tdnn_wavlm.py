@@ -49,16 +49,12 @@ class ECAPA_TDNN_WAVLM(nn.Module):
             self.feature_extract.model.encoder.layers[23].self_attn,
             "fp32_attention",
         ):
-            self.feature_extract.model.encoder.layers[
-                23
-            ].self_attn.fp32_attention = False
+            self.feature_extract.model.encoder.layers[23].self_attn.fp32_attention = False
         if len(self.feature_extract.model.encoder.layers) == 24 and hasattr(
             self.feature_extract.model.encoder.layers[11].self_attn,
             "fp32_attention",
         ):
-            self.feature_extract.model.encoder.layers[
-                11
-            ].self_attn.fp32_attention = False
+            self.feature_extract.model.encoder.layers[11].self_attn.fp32_attention = False
 
         self.feat_num = self.get_feat_num()
         self.feature_weight = nn.Parameter(torch.zeros(self.feat_num))
@@ -131,10 +127,7 @@ class ECAPA_TDNN_WAVLM(nn.Module):
         else:
             x = x.unsqueeze(0)
         norm_weights = (
-            F.softmax(self.feature_weight, dim=-1)
-            .unsqueeze(-1)
-            .unsqueeze(-1)
-            .unsqueeze(-1)
+            F.softmax(self.feature_weight, dim=-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         )
         x = (norm_weights * x).sum(dim=0)
         x = torch.transpose(x, 1, 2) + 1e-6
@@ -187,7 +180,7 @@ class Res2Conv1dReluBn(nn.Module):
 
         self.convs = []
         self.bns = []
-        for i in range(self.nums):
+        for _ in range(self.nums):
             self.convs.append(
                 nn.Conv1d(
                     self.width,
@@ -356,9 +349,7 @@ class AttentiveStatsPool(nn.Module):
     def forward(self, x):
         if self.global_context_att:
             context_mean = torch.mean(x, dim=-1, keepdim=True).expand_as(x)
-            context_std = torch.sqrt(
-                torch.var(x, dim=-1, keepdim=True) + 1e-10
-            ).expand_as(x)
+            context_std = torch.sqrt(torch.var(x, dim=-1, keepdim=True) + 1e-10).expand_as(x)
             x_in = torch.cat((x, context_mean, context_std), dim=1)
         else:
             x_in = x

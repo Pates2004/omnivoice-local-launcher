@@ -30,7 +30,7 @@ examples/exp*
 *.wav
 *.jsonl
 settings.json
-start.bat 
-# Custom configs
+# Launcher-managed environments and state
 /presets/
 /env/
+/.launcher/

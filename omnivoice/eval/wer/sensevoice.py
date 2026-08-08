@@ -86,9 +86,7 @@ def get_parser():
         default=16,
         help="Batch size for decoding.",
     )
-    parser.add_argument(
-        "--nj-per-gpu", type=int, default=1, help="Number of workers per GPU."
-    )
+    parser.add_argument("--nj-per-gpu", type=int, default=1, help="Number of workers per GPU.")
     parser.add_argument(
         "--chunk-size",
         type=int,
@@ -135,8 +133,8 @@ def _worker_setup(rank_queue):
 
     try:
         rank = rank_queue.get(timeout=10)
-    except Exception:
-        raise RuntimeError("Failed to get GPU rank from queue.")
+    except Exception as exc:
+        raise RuntimeError("Failed to get GPU rank from queue.") from exc
 
     assert torch.cuda.is_available(), "CUDA is required but not available."
     worker_device = torch.device(f"cuda:{rank}")
@@ -291,9 +289,7 @@ def main():
     ) as executor:
         futures = []
         for chunk in tasks:
-            futures.append(
-                executor.submit(run_eval_worker_sensevoice, chunk, args.batch_size)
-            )
+            futures.append(executor.submit(run_eval_worker_sensevoice, chunk, args.batch_size))
 
         with tqdm(
             total=len(yue_items),

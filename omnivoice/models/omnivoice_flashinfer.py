@@ -192,9 +192,7 @@ class PackedAttnRunner:
         self.head_dim = head_dim
         self.device = device
         self._workspace = torch.zeros(workspace_size, dtype=torch.uint8, device=device)
-        self.wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(
-            self._workspace, "NHD"
-        )
+        self.wrapper = flashinfer.BatchPrefillWithRaggedKVCacheWrapper(self._workspace, "NHD")
         self._planned_key = None
 
     def plan(self, doc_lens: List[int], dtype: torch.dtype):
@@ -244,7 +242,7 @@ def _generate_iterative_packed(
     c_lens = [inp["input_ids"].size(2) for inp in inputs_list]
     u_lens = list(task.target_lens)
     doc_lens = []
-    for c, u in zip(c_lens, u_lens):
+    for c, u in zip(c_lens, u_lens, strict=True):
         doc_lens.extend([c, u])
 
     use_graph = getattr(self, "_fi_enable_cuda_graph", False)
@@ -257,7 +255,7 @@ def _generate_iterative_packed(
     if use_graph and buckets is not None:
         frame_rate = self.audio_tokenizer.config.frame_rate
         t_max = max(u_lens)
-        overhead_max = max(c - u for c, u in zip(c_lens, u_lens))
+        overhead_max = max(c - u for c, u in zip(c_lens, u_lens, strict=True))
         bucket_U = next(
             (int(d * frame_rate) for d in sorted(buckets) if d * frame_rate >= t_max),
             None,
@@ -275,8 +273,8 @@ def _generate_iterative_packed(
         total_len = B * (C_b + U_b)
     else:
         offsets = [0]
-        for l in doc_lens[:-1]:
-            offsets.append(offsets[-1] + l)
+        for length in doc_lens[:-1]:
+            offsets.append(offsets[-1] + length)
         total_len = sum(doc_lens)
 
     C = self.config.num_audio_codebook
@@ -286,9 +284,7 @@ def _generate_iterative_packed(
         dtype=torch.long,
         device=self.device,
     )
-    packed_audio_mask = torch.zeros(
-        (1, total_len), dtype=torch.bool, device=self.device
-    )
+    packed_audio_mask = torch.zeros((1, total_len), dtype=torch.bool, device=self.device)
     position_ids = torch.zeros((1, total_len), dtype=torch.long, device=self.device)
 
     for i, inp in enumerate(inputs_list):
@@ -314,9 +310,7 @@ def _generate_iterative_packed(
             num = (
                 rem
                 if step == gen_config.num_step - 1
-                else min(
-                    math.ceil(total_mask * (timesteps[step + 1] - timesteps[step])), rem
-                )
+                else min(math.ceil(total_mask * (timesteps[step + 1] - timesteps[step])), rem)
             )
             sched.append(int(num))
             rem -= int(num)
@@ -488,7 +482,7 @@ def _get_or_capture_graph(model, doc_lens_key, tgt_index):
     # positions are fully determined by doc_lens (the cache key), so both the
     # long buffer (model-level rotary) and the int32 copy (fused rope) can be
     # baked with their final values
-    positions = torch.cat([torch.arange(l, device=device) for l in doc_lens_key])
+    positions = torch.cat([torch.arange(length, device=device) for length in doc_lens_key])
     static = {
         "input_ids": torch.full(
             (1, C, total_len),

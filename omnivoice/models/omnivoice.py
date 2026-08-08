@@ -107,9 +107,7 @@ def _autocast_flex_attention(module, query, key, value, *args, **kwargs):
     if torch.is_autocast_enabled(query.device.type) and query.dtype == torch.float32:
         dtype = torch.get_autocast_dtype(query.device.type)
         query, key, value = (t.to(dtype) for t in (query, key, value))
-    return ALL_ATTENTION_FUNCTIONS["flex_attention"](
-        module, query, key, value, *args, **kwargs
-    )
+    return ALL_ATTENTION_FUNCTIONS["flex_attention"](module, query, key, value, *args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +207,8 @@ class GenerationTask:
 
     def get_indices(self, config: OmniVoiceGenerationConfig, frame_rate: int):
         threshold = int(config.audio_chunk_threshold * frame_rate)
-        short_idx = [i for i, l in enumerate(self.target_lens) if l <= threshold]
-        long_idx = [i for i, l in enumerate(self.target_lens) if l > threshold]
+        short_idx = [i for i, length in enumerate(self.target_lens) if length <= threshold]
+        long_idx = [i for i, length in enumerate(self.target_lens) if length > threshold]
         return short_idx, long_idx
 
     def slice_task(self, indices: List[int]):
@@ -293,9 +291,7 @@ class OmniVoice(PreTrainedModel):
             self.llm = AutoModel.from_config(self.config.llm_config)
 
         if self.llm.config._attn_implementation == "flex_attention":
-            AttentionInterface.register(
-                _AUTOCAST_FLEX_ATTENTION, _autocast_flex_attention
-            )
+            AttentionInterface.register(_AUTOCAST_FLEX_ATTENTION, _autocast_flex_attention)
             self.llm.set_attn_implementation(_AUTOCAST_FLEX_ATTENTION)
 
         self.audio_embeddings = nn.Embedding(
@@ -314,8 +310,7 @@ class OmniVoice(PreTrainedModel):
         )
 
         self.normalized_audio_codebook_weights = [
-            w / sum(config.audio_codebook_weights)
-            for w in config.audio_codebook_weights
+            w / sum(config.audio_codebook_weights) for w in config.audio_codebook_weights
         ]
 
         self.post_init()
@@ -352,21 +347,15 @@ class OmniVoice(PreTrainedModel):
                 audio_tokenizer_path = os.path.join(resolved_path, "audio_tokenizer")
 
                 if not os.path.isdir(audio_tokenizer_path):
-                    audio_tokenizer_path = _resolve_model_path(
-                        "eustlb/higgs-audio-v2-tokenizer"
-                    )
+                    audio_tokenizer_path = _resolve_model_path("eustlb/higgs-audio-v2-tokenizer")
 
                 # higgs-audio-v2-tokenizer does not support MPS
                 # (output channels > 65536)
-                tokenizer_device = (
-                    "cpu" if str(model.device).startswith("mps") else model.device
-                )
+                tokenizer_device = "cpu" if str(model.device).startswith("mps") else model.device
                 model.audio_tokenizer = HiggsAudioV2TokenizerModel.from_pretrained(
                     audio_tokenizer_path, device_map=tokenizer_device
                 )
-                model.feature_extractor = AutoFeatureExtractor.from_pretrained(
-                    audio_tokenizer_path
-                )
+                model.feature_extractor = AutoFeatureExtractor.from_pretrained(audio_tokenizer_path)
 
                 model.sampling_rate = model.feature_extractor.sampling_rate
 
@@ -387,9 +376,7 @@ class OmniVoice(PreTrainedModel):
     # ASR support (optional, for auto-transcription)
     # -------------------------------------------------------------------
 
-    def load_asr_model(
-        self, model_name: Optional[str] = None, device: Optional[str] = None
-    ):
+    def load_asr_model(self, model_name: Optional[str] = None, device: Optional[str] = None):
         """Load a Whisper ASR model for reference audio transcription.
 
         Args:
@@ -410,9 +397,7 @@ class OmniVoice(PreTrainedModel):
             device = self._asr_device if self._asr_device is not None else self.device
 
         logger.info("Loading ASR model %s ...", model_name)
-        asr_dtype = (
-            torch.float16 if str(device).startswith(("cuda", "xpu")) else torch.float32
-        )
+        asr_dtype = torch.float16 if str(device).startswith(("cuda", "xpu")) else torch.float32
 
         model_name = _resolve_model_path(model_name)
 
@@ -444,9 +429,7 @@ class OmniVoice(PreTrainedModel):
             Transcribed text.
         """
         if self._asr_pipe is None:
-            raise RuntimeError(
-                "ASR model is not loaded. Call model.load_asr_model() first."
-            )
+            raise RuntimeError("ASR model is not loaded. Call model.load_asr_model() first.")
 
         if isinstance(audio, str):
             return self._asr_pipe(audio)["text"].strip()
@@ -480,9 +463,9 @@ class OmniVoice(PreTrainedModel):
         # audio_ids: [Batch, 8, Seq]
         # codebook_layer_offsets: [1, 8, 1]
         # Result: Layer 0 ID Layer 1 ID + Layer 2 ID + 2050...
-        shifted_ids = (
-            input_ids * audio_mask.unsqueeze(1)
-        ) + self.codebook_layer_offsets.view(1, -1, 1)
+        shifted_ids = (input_ids * audio_mask.unsqueeze(1)) + self.codebook_layer_offsets.view(
+            1, -1, 1
+        )
 
         # input: [Batch, 8, Seq] -> output: [Batch, Seq, Hidden]
         audio_embeds = self.audio_embeddings(shifted_ids).sum(dim=1)
@@ -554,9 +537,9 @@ class OmniVoice(PreTrainedModel):
             valid_mask = (labels != -100).float()
 
             # layer_means shape: [num_layers]
-            layer_means = (per_token_loss * valid_mask).sum(
+            layer_means = (per_token_loss * valid_mask).sum(dim=(0, 2)) / valid_mask.sum(
                 dim=(0, 2)
-            ) / valid_mask.sum(dim=(0, 2)).clamp(min=1.0)
+            ).clamp(min=1.0)
 
             weights = torch.tensor(
                 self.normalized_audio_codebook_weights, device=audio_logits.device
@@ -593,9 +576,7 @@ class OmniVoice(PreTrainedModel):
             list[tuple[torch.Tensor, int]],
             None,
         ] = None,
-        voice_clone_prompt: Union[
-            VoiceClonePrompt, list[VoiceClonePrompt], None
-        ] = None,
+        voice_clone_prompt: Union[VoiceClonePrompt, list[VoiceClonePrompt], None] = None,
         instruct: Union[str, list[str], None] = None,
         duration: Union[float, list[Optional[float]], None] = None,
         speed: Union[float, list[Optional[float]], None] = None,
@@ -704,13 +685,13 @@ class OmniVoice(PreTrainedModel):
         if short_idx:
             short_task = full_task.slice_task(short_idx)
             short_results = self._generate_iterative(short_task, gen_config)
-            for idx, res in zip(short_idx, short_results):
+            for idx, res in zip(short_idx, short_results, strict=True):
                 results[idx] = res
 
         if long_idx:
             long_task = full_task.slice_task(long_idx)
             long_results = self._generate_chunked(long_task, gen_config)
-            for idx, res in zip(long_idx, long_results):
+            for idx, res in zip(long_idx, long_results, strict=True):
                 results[idx] = res
 
         generated_audios = []
@@ -780,9 +761,7 @@ class OmniVoice(PreTrainedModel):
             # Skip trimming when ref_text is user-provided, otherwise the
             # trimmed audio will no longer match the full transcript.
             if ref_text is None:
-                ref_wav = trim_long_audio(
-                    ref_wav, self.sampling_rate, trim_threshold=20.0
-                )
+                ref_wav = trim_long_audio(ref_wav, self.sampling_rate, trim_threshold=20.0)
             ref_wav = remove_silence(
                 ref_wav,
                 self.sampling_rate,
@@ -1033,9 +1012,7 @@ class OmniVoice(PreTrainedModel):
             list[tuple[torch.Tensor, int]],
             None,
         ] = None,
-        voice_clone_prompt: Union[
-            VoiceClonePrompt, list[VoiceClonePrompt], None
-        ] = None,
+        voice_clone_prompt: Union[VoiceClonePrompt, list[VoiceClonePrompt], None] = None,
         instruct: Union[str, list[str], None] = None,
         preprocess_prompt: bool = True,
         speed: Union[float, list[Optional[float]], None] = None,
@@ -1045,9 +1022,7 @@ class OmniVoice(PreTrainedModel):
         if isinstance(text, str):
             text_list = [text]
         else:
-            assert isinstance(text, list), (
-                "text should be a string or a list of strings"
-            )
+            assert isinstance(text, list), "text should be a string or a list of strings"
             text_list = text
         batch_size = len(text_list)
 
@@ -1059,7 +1034,7 @@ class OmniVoice(PreTrainedModel):
         # before duration estimation so the estimate matches the spoken form.
         if normalize_text:
             text_list = [
-                _normalize_text(t, lang) for t, lang in zip(text_list, language_list)
+                _normalize_text(t, lang) for t, lang in zip(text_list, language_list, strict=True)
             ]
         instruct_list = self._ensure_list(instruct, batch_size)
         for i, s in enumerate(instruct_list):
@@ -1068,9 +1043,7 @@ class OmniVoice(PreTrainedModel):
             use_zh = bool(text_list[i] and _ZH_RE.search(text_list[i]))
             instruct_list[i] = _resolve_instruct(s, use_zh=use_zh)
 
-        if voice_clone_prompt is not None and (
-            ref_text is not None or ref_audio is not None
-        ):
+        if voice_clone_prompt is not None and (ref_text is not None or ref_audio is not None):
             logger.warning(
                 "Both voice_clone_prompt and ref_text/ref_audio are provided. "
                 "ref_text/ref_audio will be ignored."
@@ -1094,9 +1067,7 @@ class OmniVoice(PreTrainedModel):
         voice_clone_prompt_list = self._ensure_list(voice_clone_prompt, batch_size)
         if voice_clone_prompt_list[0] is not None:
             ref_text_list = [vc.ref_text for vc in voice_clone_prompt_list]
-            ref_audio_tokens_list = [
-                vc.ref_audio_tokens for vc in voice_clone_prompt_list
-            ]
+            ref_audio_tokens_list = [vc.ref_audio_tokens for vc in voice_clone_prompt_list]
             ref_rms_list = [vc.ref_rms for vc in voice_clone_prompt_list]
         else:
             ref_text_list = [None] * batch_size
@@ -1129,9 +1100,7 @@ class OmniVoice(PreTrainedModel):
             est = self._estimate_target_tokens(
                 text_list[i],
                 ref_text_list[i],
-                ref_audio_tokens_list[i].size(-1)
-                if ref_audio_tokens_list[i] is not None
-                else None,
+                ref_audio_tokens_list[i].size(-1) if ref_audio_tokens_list[i] is not None else None,
                 speed=item_speed,
             )
             num_target_tokens_list.append(est)
@@ -1173,9 +1142,7 @@ class OmniVoice(PreTrainedModel):
             ref_text = "Nice to meet you."
             num_ref_audio_tokens = 25
 
-        est = self.duration_estimator.estimate_duration(
-            text, ref_text, num_ref_audio_tokens
-        )
+        est = self.duration_estimator.estimate_duration(text, ref_text, num_ref_audio_tokens)
         if speed > 0 and speed != 1.0:
             est = est / speed
         return max(1, int(est))
@@ -1188,9 +1155,7 @@ class OmniVoice(PreTrainedModel):
             1,
             batch_size,
         ):
-            raise ValueError(
-                f"should be either the number of the text or 1, but got {len(x_list)}"
-            )
+            raise ValueError(f"should be either the number of the text or 1, but got {len(x_list)}")
         if auto_repeat and len(x_list) == 1 and batch_size is not None:
             x_list = x_list * batch_size
         return x_list
@@ -1262,9 +1227,7 @@ class OmniVoice(PreTrainedModel):
         if ref_audio_tokens is not None:
             cond_audio_start_idx -= ref_audio_tokens.size(-1)
 
-        cond_audio_mask = torch.zeros(
-            1, cond_total_length, dtype=torch.bool, device=self.device
-        )
+        cond_audio_mask = torch.zeros(1, cond_total_length, dtype=torch.bool, device=self.device)
         cond_audio_mask[0, cond_audio_start_idx:] = True
 
         return {
@@ -1323,9 +1286,7 @@ class OmniVoice(PreTrainedModel):
             dtype=torch.long,
             device=self.device,
         )
-        batch_audio_mask = torch.zeros(
-            (2 * B, max_c_len), dtype=torch.bool, device=self.device
-        )
+        batch_audio_mask = torch.zeros((2 * B, max_c_len), dtype=torch.bool, device=self.device)
         batch_attention_mask = torch.zeros(
             (2 * B, 1, max_c_len, max_c_len), dtype=torch.bool, device=self.device
         )
@@ -1377,9 +1338,7 @@ class OmniVoice(PreTrainedModel):
                 rem -= int(num)
             schedules.append(sched)
 
-        layer_ids = torch.arange(
-            self.config.num_audio_codebook, device=self.device
-        ).view(1, -1, 1)
+        layer_ids = torch.arange(self.config.num_audio_codebook, device=self.device).view(1, -1, 1)
 
         for step in range(gen_config.num_step):
             batch_logits = self(
@@ -1410,9 +1369,7 @@ class OmniVoice(PreTrainedModel):
                     scores = _gumbel_sample(scores, gen_config.position_temperature)
 
                 sample_tokens = tokens[i : i + 1, :, :t_len]
-                scores.masked_fill_(
-                    sample_tokens != self.config.audio_mask_id, -float("inf")
-                )
+                scores.masked_fill_(sample_tokens != self.config.audio_mask_id, -float("inf"))
 
                 _, topk_idx = torch.topk(scores.flatten(), k)
                 flat_tokens = sample_tokens.flatten()
@@ -1441,9 +1398,9 @@ class OmniVoice(PreTrainedModel):
 
         if gen_config.class_temperature > 0.0:
             filtered_probs = _filter_top_k(log_probs, ratio=0.1)
-            pred_tokens = _gumbel_sample(
-                filtered_probs, gen_config.class_temperature
-            ).argmax(dim=-1)
+            pred_tokens = _gumbel_sample(filtered_probs, gen_config.class_temperature).argmax(
+                dim=-1
+            )
         else:
             pred_tokens = log_probs.argmax(dim=-1)
 
@@ -1489,9 +1446,7 @@ def _resolve_language(language: Optional[str]) -> Union[str, None]:
     return None
 
 
-def _resolve_instruct(
-    instruct: Optional[str], use_zh: bool = False
-) -> Union[str, None]:
+def _resolve_instruct(instruct: Optional[str], use_zh: bool = False) -> Union[str, None]:
     """Validate and normalise a voice-design instruct string.
 
     Supported instruct items (case-insensitive for English):
@@ -1641,8 +1596,10 @@ def _get_time_steps(
     t_end: float = 1.0,
     num_step: int = 10,
     t_shift: float = 1.0,
-    device: torch.device = torch.device("cpu"),
+    device: Optional[torch.device] = None,
 ) -> torch.Tensor:
+    if device is None:
+        device = torch.device("cpu")
     timesteps = torch.linspace(t_start, t_end, num_step + 1).to(device)
     timesteps = t_shift * timesteps / (1 + (t_shift - 1) * timesteps)
     return timesteps

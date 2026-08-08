@@ -24,7 +24,6 @@ using character phonetic weights across 600+ languages. Used by
 
 import bisect
 import unicodedata
-from functools import lru_cache
 from typing import Optional
 
 
@@ -161,10 +160,21 @@ class RuleDurationEstimator:
             (0xFFEF, "latin"),  # Fullwidth Latin
         ]
         self.breakpoints = [r[0] for r in self.ranges]
+        self._char_weight_cache: dict[str, float] = {}
 
-    @lru_cache(maxsize=4096)
     def _get_char_weight(self, char):
         """Determines the weight of a single character."""
+        if char in self._char_weight_cache:
+            return self._char_weight_cache[char]
+
+        weight = self._calculate_char_weight(char)
+        if len(self._char_weight_cache) >= 4096:
+            self._char_weight_cache.clear()
+        self._char_weight_cache[char] = weight
+        return weight
+
+    def _calculate_char_weight(self, char):
+        """Calculates and returns an uncached character weight."""
         code = ord(char)
         if (65 <= code <= 90) or (97 <= code <= 122):
             return self.weights["latin"]

@@ -61,9 +61,7 @@ def build_model_and_tokenizer(
 
     # 1. Tokenizer
     tokenizer_path = (
-        config.init_from_checkpoint
-        if config.init_from_checkpoint
-        else config.llm_name_or_path
+        config.init_from_checkpoint if config.init_from_checkpoint else config.llm_name_or_path
     )
     tokenizer_path = _resolve_model_path(tokenizer_path)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
@@ -184,17 +182,13 @@ def build_dataloaders(
         only_instruct_ratio=config.only_instruct_ratio,
     )
 
-    train_manifests, dev_manifests = prepare_data_manifests_from_json(
-        config.data_config
-    )
+    train_manifests, dev_manifests = prepare_data_manifests_from_json(config.data_config)
     raw_train_ds = WebDatasetReader(manifests=train_manifests, evaluation=False)
 
     use_packing = config.attn_implementation == "flex_attention"
 
     if use_packing:
-        train_dataset = PackingIterableDataset(
-            raw_train_ds, processor, config.batch_tokens
-        )
+        train_dataset = PackingIterableDataset(raw_train_ds, processor, config.batch_tokens)
         collate_fn = PackingDataCollator(processor, config.batch_tokens)
     else:
         train_dataset = StreamLengthGroupDataset(
@@ -217,9 +211,7 @@ def build_dataloaders(
     init_fn = partial(
         seed_worker,
         num_workers=config.num_workers,
-        rank=(
-            torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
-        ),
+        rank=(torch.distributed.get_rank() if torch.distributed.is_initialized() else 0),
     )
 
     train_loader = DataLoader(
@@ -236,9 +228,7 @@ def build_dataloaders(
     if dev_manifests:
         raw_dev_ds = WebDatasetReader(manifests=dev_manifests, evaluation=True)
         if use_packing:
-            dev_dataset = PackingIterableDataset(
-                raw_dev_ds, processor, config.batch_tokens
-            )
+            dev_dataset = PackingIterableDataset(raw_dev_ds, processor, config.batch_tokens)
         else:
             dev_dataset = StreamLengthGroupDataset(
                 raw_dev_ds,

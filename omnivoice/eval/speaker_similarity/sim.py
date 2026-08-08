@@ -46,9 +46,7 @@ worker_sr = 16000
 
 
 def get_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Calculate speaker similarity (SIM-o) score."
-    )
+    parser = argparse.ArgumentParser(description="Calculate speaker similarity (SIM-o) score.")
     parser.add_argument(
         "--wav-path",
         type=str,
@@ -110,7 +108,9 @@ def worker_init(
 
     torch.set_num_threads(2)
 
-    formatter = "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] [Worker %(process)d] %(message)s"
+    formatter = (
+        "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] [Worker %(process)d] %(message)s"
+    )
     logging.basicConfig(format=formatter, level=logging.INFO, force=True)
 
     rank = rank_queue.get() if rank_queue else -1
@@ -131,9 +131,7 @@ def worker_init(
             sr=worker_sr,
             ssl_model_path=ssl_model_path,
         )
-        state_dict = torch.load(
-            sv_model_path, map_location=lambda storage, loc: storage
-        )
+        state_dict = torch.load(sv_model_path, map_location=lambda storage, loc: storage)
         worker_model.load_state_dict(state_dict["model"], strict=False)
         worker_model.to(worker_device)
         worker_model.eval()
@@ -145,9 +143,7 @@ def worker_init(
 @torch.no_grad()
 def get_embedding(wav_path: str) -> torch.Tensor:
     """Extract embedding for a single file."""
-    speech = load_eval_waveform(
-        wav_path, worker_sr, device=worker_device, max_seconds=120
-    )
+    speech = load_eval_waveform(wav_path, worker_sr, device=worker_device, max_seconds=120)
     return worker_model([speech])
 
 
@@ -196,9 +192,7 @@ def main():
     logging.basicConfig(format=formatter, level=logging.INFO, force=True)
 
     # Prepare paths
-    sv_model_path = os.path.join(
-        args.model_dir, "speaker_similarity/wavlm_large_finetune.pth"
-    )
+    sv_model_path = os.path.join(args.model_dir, "speaker_similarity/wavlm_large_finetune.pth")
     ssl_model_path = os.path.join(args.model_dir, "speaker_similarity/wavlm_large/")
 
     if not os.path.exists(sv_model_path) or not os.path.exists(ssl_model_path):
@@ -214,9 +208,7 @@ def main():
     assert num_gpus > 0, "No GPU found. GPU is required."
     total_procs = num_gpus * args.nj_per_gpu
 
-    logging.info(
-        f"Starting evaluation with {total_procs} processes on {num_gpus} GPUs."
-    )
+    logging.info(f"Starting evaluation with {total_procs} processes on {num_gpus} GPUs.")
 
     manager = mp.Manager()
     rank_queue = manager.Queue()
@@ -246,14 +238,10 @@ def main():
             futures = []
             for i, sample in enumerate(samples):
                 futures.append(
-                    executor.submit(
-                        run_similarity_worker, i, sample, args.wav_path, args.extension
-                    )
+                    executor.submit(run_similarity_worker, i, sample, args.wav_path, args.extension)
                 )
 
-            pbar = tqdm(
-                as_completed(futures), total=len(samples), desc="Evaluating SIM-o"
-            )
+            pbar = tqdm(as_completed(futures), total=len(samples), desc="Evaluating SIM-o")
 
             lang_stats = {}
 
@@ -272,16 +260,12 @@ def main():
                         if lang == "unknown":
                             fout.write(f"{prompt_path}\t{eval_path}\t{result:.2f}\n")
                         else:
-                            fout.write(
-                                f"{lang}\t{context[0]}\t{context[1]}\t{result:.2f}\n"
-                            )
+                            fout.write(f"{lang}\t{context[0]}\t{context[1]}\t{result:.2f}\n")
                 else:
                     pbar.write(f"!!! FAILED [Line {idx}]: {context} | Error: {result}")
 
     except (Exception, KeyboardInterrupt) as e:
-        logging.critical(
-            f"An unrecoverable error occurred: {e}. Terminating all processes."
-        )
+        logging.critical(f"An unrecoverable error occurred: {e}. Terminating all processes.")
         detailed_error_info = traceback.format_exc()
         logging.error(f"--- DETAILED TRACEBACK ---\n{detailed_error_info}")
         sys.exit(1)

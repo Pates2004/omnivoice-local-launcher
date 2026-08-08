@@ -39,15 +39,9 @@ from omnivoice.training.trainer import OmniTrainer
 
 def main():
     parser = argparse.ArgumentParser(description="OmniVoice Training Entry Point")
-    parser.add_argument(
-        "--train_config", type=str, required=True, help="Path to config JSON"
-    )
-    parser.add_argument(
-        "--output_dir", type=str, required=True, help="Where to save checkpoints"
-    )
-    parser.add_argument(
-        "--data_config", type=str, required=True, help="Path to data config JSON"
-    )
+    parser.add_argument("--train_config", type=str, required=True, help="Path to config JSON")
+    parser.add_argument("--output_dir", type=str, required=True, help="Where to save checkpoints")
+    parser.add_argument("--data_config", type=str, required=True, help="Path to data config JSON")
     args = parser.parse_args()
 
     # 1. Load Configuration

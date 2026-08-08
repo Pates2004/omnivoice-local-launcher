@@ -160,11 +160,7 @@ all_punct_quotes = (
     + left_single_quotation_mark
 )
 mapping_quotes = (
-    "["
-    + high_single_quotes
-    + right_single_quotation_mark
-    + left_single_quotation_mark
-    + "]"
+    "[" + high_single_quotes + right_single_quotation_mark + left_single_quotation_mark + "]"
 )
 
 
@@ -186,9 +182,7 @@ nominal_digit_shapes = r"\u206f"
 # Load punctuations
 with open(f"{os.path.dirname(__file__)}/punctuations.lst", "r") as punc_f:
     punc_list = [
-        line
-        for line in punc_f.readlines()
-        if line.strip() and not line.strip().startswith("#")
+        line for line in punc_f.readlines() if line.strip() and not line.strip().startswith("#")
     ]
 
 punct_pattern = r""

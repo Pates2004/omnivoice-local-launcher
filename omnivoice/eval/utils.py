@@ -27,7 +27,7 @@ def load_eval_waveform(
     fname: str,
     sample_rate: int,
     dtype: str = "float32",
-    device: torch.device = torch.device("cpu"),
+    device: Optional[torch.device] = None,
     return_numpy: bool = False,
     max_seconds: Optional[float] = None,
 ) -> torch.Tensor:
@@ -53,6 +53,8 @@ def load_eval_waveform(
         - If the audio is stereo, it will be converted to mono by averaging channels.
         - If the audio's sample rate differs from the target, it will be resampled.
     """
+    if device is None:
+        device = torch.device("cpu")
     # Load audio file with specified data type
     wav_data, sr = sf.read(fname, dtype=dtype)
 

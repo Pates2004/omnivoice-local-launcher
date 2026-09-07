@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "updated": "2026-09-07",
+  "profiles": {
+    "cuda": {
+      "display_name": "NVIDIA CUDA",
+      "torch_version": "2.11.0+cu128",
+      "torchaudio_version": "2.11.0+cu128",
+      "runtime_version": "CUDA 12.8",
+      "python_min": "3.10",
+      "python_max_exclusive": "3.14",
+      "windows_min_build": 10240,
+      "index_url": "https://download.pytorch.org/whl/cu128",
+      "prerequisite_packages": [],
+      "packages": [
+        "torch==2.11.0",
+        "torchaudio==2.11.0"
+      ],
+      "supported_hardware_patterns": [
+        "NVIDIA"
+      ],
+      "experimental": false
+    },
+    "rocm": {
+      "display_name": "AMD ROCm",
+      "torch_version": "2.9.1+rocm7.2.1",
+      "torchaudio_version": "2.9.1+rocm7.2.1",
+      "runtime_version": "ROCm 7.2.1",
+      "python_min": "3.12",
+      "python_max_exclusive": "3.13",
+      "windows_min_build": 22000,
+      "index_url": null,
+      "prerequisite_packages": [
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_core-7.2.1-py3-none-win_amd64.whl",
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_devel-7.2.1-py3-none-win_amd64.whl",
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm_sdk_libraries_custom-7.2.1-py3-none-win_amd64.whl",
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/rocm-7.2.1.tar.gz"
+      ],
+      "packages": [
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchaudio-2.9.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl",
+        "https://repo.radeon.com/rocm/windows/rocm-rel-7.2.1/torchvision-0.24.1%2Brocm7.2.1-cp312-cp312-win_amd64.whl"
+      ],
+      "supported_hardware_patterns": [
+        "Radeon RX 9070(?: XT)?",
+        "Radeon AI PRO R9700",
+        "Radeon RX 9060 XT",
+        "Radeon RX 7900 XTX",
+        "Radeon PRO W7900(?: Dual Slot)?",
+        "Radeon RX 7700",
+        "Radeon.*80(?:40|50|60)S",
+        "Radeon.*8(?:80|90)M",
+        "Ryzen AI Max\\+(?: PRO)? 395",
+        "Ryzen AI Max(?: PRO)? 390",
+        "Ryzen AI Max(?: PRO)? 385",
+        "Ryzen AI 9 HX 375",
+        "Ryzen AI 9 HX 370",
+        "Ryzen AI 9 365",
+        "Ryzen AI 9 HX 475",
+        "Ryzen AI 9 HX 470",
+        "Ryzen AI 9 465"
+      ],
+      "experimental": true
+    },
+    "xpu": {
+      "display_name": "Intel XPU",
+      "torch_version": "2.11.0+xpu",
+      "torchaudio_version": "2.11.0+xpu",
+      "runtime_version": "Intel XPU",
+      "python_min": "3.10",
+      "python_max_exclusive": "3.14",
+      "windows_min_build": 22000,
+      "index_url": "https://download.pytorch.org/whl/xpu",
+      "prerequisite_packages": [],
+      "packages": [
+        "torch==2.11.0",
+        "torchaudio==2.11.0"
+      ],
+      "supported_hardware_patterns": [
+        "Intel.*Arc",
+        "Arc.*Graphics"
+      ],
+      "experimental": false
+    },
+    "cpu": {
+      "display_name": "CPU",
+      "torch_version": "2.11.0+cpu",
+      "torchaudio_version": "2.11.0+cpu",
+      "runtime_version": null,
+      "python_min": "3.10",
+      "python_max_exclusive": "3.14",
+      "windows_min_build": 10240,
+      "index_url": "https://download.pytorch.org/whl/cpu",
+      "prerequisite_packages": [],
+      "packages": [
+        "torch==2.11.0",
+        "torchaudio==2.11.0"
+      ],
+      "supported_hardware_patterns": [],
+      "experimental": false
+    }
+  }
+}

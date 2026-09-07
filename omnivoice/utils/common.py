@@ -44,7 +44,7 @@ def str2bool(v):
 
 
 def get_best_device():
-    """Auto-detect the best available device: CUDA > XPU > MPS > CPU."""
+    """Auto-detect the best device: CUDA/ROCm > XPU > MPS > CPU."""
     if torch.cuda.is_available():
         return "cuda"
     if hasattr(torch, "xpu") and torch.xpu.is_available():
@@ -55,7 +55,7 @@ def get_best_device():
 
 
 def get_best_device_with_count():
-    """Auto-detect best device and return (device_type, device_count)."""
+    """Auto-detect the best backend and return (torch device type, count)."""
     if torch.cuda.is_available():
         return "cuda", torch.cuda.device_count()
     if hasattr(torch, "xpu") and torch.xpu.is_available():
@@ -63,6 +63,14 @@ def get_best_device_with_count():
     if torch.backends.mps.is_available():
         return "mps", 1
     return "cpu", 1
+
+
+def get_preferred_dtype(device):
+    """Return a portable inference dtype for a torch device or device string."""
+    device_type = getattr(device, "type", str(device).split(":", 1)[0]).lower()
+    if device_type in {"cuda", "xpu", "mps"}:
+        return torch.float16
+    return torch.float32
 
 
 def fix_random_seed(random_seed: int):

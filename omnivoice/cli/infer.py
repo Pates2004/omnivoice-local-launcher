@@ -22,12 +22,10 @@ Usage:
 import argparse
 import logging
 
-import torch
-
 import soundfile as sf
 
 from omnivoice.models.omnivoice import OmniVoice
-from omnivoice.utils.common import get_best_device, str2bool
+from omnivoice.utils.common import get_best_device, get_preferred_dtype, str2bool
 
 
 def get_parser() -> argparse.ArgumentParser:
@@ -126,7 +124,12 @@ def main():
 
     device = args.device or get_best_device()
     logging.info(f"Loading model from {args.model} on {device} ...")
-    model = OmniVoice.from_pretrained(args.model, device_map=device, dtype=torch.float16)
+    model = OmniVoice.from_pretrained(
+        args.model,
+        device_map=device,
+        dtype=get_preferred_dtype(device),
+        attn_implementation="sdpa",
+    )
 
     if args.lora_adapter:
         from omnivoice.utils.lora import load_lora_adapter

@@ -48,7 +48,7 @@ from omnivoice.models.omnivoice import OmniVoice
 import soundfile as sf
 
 from omnivoice.utils.audio import load_audio
-from omnivoice.utils.common import get_best_device_with_count, str2bool
+from omnivoice.utils.common import get_best_device_with_count, get_preferred_dtype, str2bool
 from omnivoice.utils.data_utils import read_test_list
 from omnivoice.utils.duration import RuleDurationEstimator
 
@@ -149,7 +149,7 @@ def get_parser():
         type=int,
         default=0,
         help="Number of dummy inference runs per worker before real inference "
-        "starts, to warm up CUDA kernels and caches.",
+        "starts, to warm up accelerator kernels and caches.",
     )
     parser.add_argument(
         "--preprocess_prompt",
@@ -227,7 +227,8 @@ def process_init(rank_queue, model_checkpoint, warmup=0, enable_flashinfer=False
     worker_model = OmniVoice.from_pretrained(
         model_checkpoint,
         device_map=worker_device,
-        dtype=torch.float16,
+        dtype=get_preferred_dtype(worker_device),
+        attn_implementation="sdpa",
     )
 
     # Opt-in flashinfer acceleration. Applied here because workers are

@@ -33,4 +33,11 @@ settings.json
 # Launcher-managed environments and state
 /presets/
 /env/
+/env.new/
+/env.old/
+/env.failed/
+/venv.new/
+/venv.old/
+/venv.failed/
 /.launcher/
+/trash/

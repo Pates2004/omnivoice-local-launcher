@@ -1,0 +1,14 @@
+# Web runtime dependencies installed by launcher.ps1.
+# PyTorch and TorchAudio intentionally live in installer_backends.json so pip
+# cannot replace the selected CUDA, ROCm, XPU, or CPU build.
+transformers>=5.3.0
+accelerate
+pydub
+gradio
+tensorboardX
+webdataset
+numpy
+soundfile
+librosa
+hatchling
+editables

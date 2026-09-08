@@ -36,6 +36,24 @@ The launcher detects compatible 64-bit Python installations and offers:
 Both choices are isolated inside this checkout; system Python packages are not
 modified. The selected Python mode is remembered in `.launcher/`.
 
+Portable mode downloads the official [CPython NuGet package](https://www.nuget.org/packages/python/3.12.10)
+and verifies SHA-256; it does not register Python globally or change system PATH.
+This replaces the embedded ZIP, whose isolation broke pip builds of ROCm's source
+package with `Cannot import 'setuptools.build_meta'`. After updating the launcher,
+retry `start.bat -Mode Portable`; deleting the application or installing a global
+HIP SDK is not needed to resolve that Python build error.
+
+On normal startup the launcher checks hardware, declared dependency versions,
+and a real accelerator operation. Full application imports and `pip check` run
+during installation, with `-InstallOnly`, or after installer inputs/hardware change.
+An outdated marker is refreshed if the existing runtime passes validation, without
+rebuilding a working environment. Application and model loading still take time.
+
+AMD ROCm is a supported profile, subject to the GPU/Windows/driver requirements
+in the backend matrix. The required ROCm SDK Python packages are installed inside
+the selected environment. A compatible AMD graphics driver is still required;
+see [AMD's Windows guide](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installryz/windows/install-pytorch.html).
+
 Installation is transactional. A replacement is built and tested in
 `env.new/` or `venv.new/`; only a fully valid runtime replaces the active
 environment. The previous working environment is kept as `env.old/` or
@@ -97,6 +115,13 @@ start.bat -SelfTest
 
 The web launcher uses Gradio. wxPython belongs to the separate OmniSonic
 desktop application and is not installed here.
+
+## Launcher regression tests
+
+Run `powershell -File tests/test_launcher.ps1` for startup logic tests. Add
+`-Portable` to download portable Python, build the small ROCm source package,
+and verify pip after environment activation/renaming. No GPU or global HIP SDK
+is needed for that package-build test. Diagnostic artifacts remain in `trash/`.
 
 ## Credits
 

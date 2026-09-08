@@ -25,9 +25,8 @@ $BackendFile = Join-Path $WorkDir "backend.txt"
 $BackendMatrixPath = Join-Path $ProjectRoot "installer_backends.json"
 $RuntimeRequirementsPath = Join-Path $ProjectRoot "requirements-launcher.txt"
 $PythonVersion = "3.12.10"
-$PythonArchiveUrl = "https://www.python.org/ftp/python/$PythonVersion/python-$PythonVersion-embed-amd64.zip"
-$PythonArchiveMd5 = "fe8ef205f2e9c3ba44d0cf9954e1abd3"
-$GetPipUrl = "https://bootstrap.pypa.io/get-pip.py"
+$PythonArchiveUrl = "https://api.nuget.org/v3-flatcontainer/python/$PythonVersion/python.$PythonVersion.nupkg"
+$PythonArchiveSha256 = "0EB85C2DFCCCCF1B17352DE4C397F69194035B7D37149EACC16F1147D93DE3B8"
 $LauncherRevision = 8
 $script:LastRuntimeError = ""
 
@@ -63,7 +62,7 @@ function Remove-LauncherDirectory {
 function Invoke-Checked {
     param([string]$FilePath, [string[]]$Arguments, [string]$Description)
     Write-Step $Description
-    & $FilePath @Arguments | Out-Host
+    & $FilePath -I @Arguments | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "$Description failed with exit code $LASTEXITCODE."
     }
@@ -261,19 +260,15 @@ function Save-BackendPreference {
 
 function Test-CompatiblePython {
     param([string]$Python, [object]$Profile = $null)
-    if (-not (Test-Path -LiteralPath $Python)) { return $false }
-    & $Python -c "import sys; raise SystemExit(0 if (3, 10) <= sys.version_info[:2] < (3, 14) and sys.maxsize > 2**32 else 1)" 2>$null
-    if ($LASTEXITCODE -ne 0) { return $false }
+    if (-not $Python -or -not (Test-Path -LiteralPath $Python)) { return $false }
+    $minimum = "3.10"
+    $maximum = "3.14"
     if ($null -ne $Profile) {
-        $minimum = [Version]$Profile.python_min
-        $maximum = [Version]$Profile.python_max_exclusive
-        $versionText = (& $Python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null |
-            Select-Object -Last 1)
-        if (-not $versionText) { return $false }
-        $version = [Version]$versionText.Trim()
-        if ($version -lt $minimum -or $version -ge $maximum) { return $false }
+        $minimum = [string]$Profile.python_min
+        $maximum = [string]$Profile.python_max_exclusive
     }
-    return $true
+    & $Python -I -c "import sys; lo=tuple(map(int, sys.argv[1].split('.'))); hi=tuple(map(int, sys.argv[2].split('.'))); raise SystemExit(0 if lo <= sys.version_info[:2] < hi and sys.maxsize > 2**32 else 1)" $minimum $maximum 2>$null
+    return $LASTEXITCODE -eq 0
 }
 
 function Find-SystemPython {
@@ -353,6 +348,17 @@ function Resolve-PythonMode {
     if ($preferred -eq "Auto" -and $savedMode -in @("System", "Portable")) {
         $preferred = $savedMode
     }
+    if ($preferred -eq "Portable") {
+        return [pscustomobject]@{ Mode = "Portable"; SystemPython = $null }
+    }
+    foreach ($candidateMode in @("Portable", "System")) {
+        if ($preferred -notin @("Auto", $candidateMode)) { continue }
+        $candidateRoot = Get-EnvironmentRootForMode $candidateMode
+        $candidatePython = Get-EnvironmentPython $candidateMode $candidateRoot
+        if (Test-CompatiblePython $candidatePython $Profile) {
+            return [pscustomobject]@{ Mode = $candidateMode; SystemPython = $null }
+        }
+    }
     $systemPython = Find-SystemPython $Profile
     if ($preferred -eq "System" -and -not $systemPython) {
         $existingVenvPython = Get-EnvironmentPython "System" $VenvDir
@@ -386,41 +392,34 @@ function Resolve-PythonMode {
 function Install-PortablePythonAt {
     param([string]$TargetRoot)
     Assert-ProjectChildPath $TargetRoot | Out-Null
+    if (Test-Path -LiteralPath $TargetRoot) { throw "Portable target already exists: $TargetRoot" }
     New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
-    $archive = Join-Path $WorkDir "python-$PythonVersion-embed-amd64.zip"
-    $needsDownload = $true
-    if (Test-Path -LiteralPath $archive) {
-        $actualMd5 = (Get-FileHash -LiteralPath $archive -Algorithm MD5).Hash.ToLowerInvariant()
-        $needsDownload = $actualMd5 -ne $PythonArchiveMd5
-        if ($needsDownload) { Remove-Item -LiteralPath $archive -Force }
-    }
-    if ($needsDownload) {
-        Write-Step "Downloading portable Python $PythonVersion from python.org..."
+    $archive = Join-Path $WorkDir "python-$PythonVersion-nuget-amd64.zip"
+    if (-not (Test-Path -LiteralPath $archive) -or
+        (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $PythonArchiveSha256) {
+        Write-Step "Downloading official portable CPython $PythonVersion from NuGet..."
         Invoke-WebRequest -UseBasicParsing -Uri $PythonArchiveUrl -OutFile $archive
     }
-    $actualMd5 = (Get-FileHash -LiteralPath $archive -Algorithm MD5).Hash.ToLowerInvariant()
-    if ($actualMd5 -ne $PythonArchiveMd5) {
-        throw "Portable Python checksum mismatch. Expected $PythonArchiveMd5, got $actualMd5."
+    $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+    if ($actualHash -ne $PythonArchiveSha256) {
+        throw "Portable Python checksum mismatch. Expected $PythonArchiveSha256, got $actualHash."
     }
-    New-Item -ItemType Directory -Path $TargetRoot -Force | Out-Null
-    Expand-Archive -LiteralPath $archive -DestinationPath $TargetRoot -Force
-    $pth = @(Get-ChildItem -LiteralPath $TargetRoot -Filter "python*._pth")
-    if ($pth.Count -ne 1) { throw "Could not locate portable Python _pth configuration." }
-    (Get-Content -LiteralPath $pth[0].FullName) -replace '^#import site$', 'import site' |
-        Set-Content -LiteralPath $pth[0].FullName -Encoding ASCII
+    # Unlike the embedded ZIP, this official CPython package supports pip's
+    # isolated build environments (including the ROCm source distribution).
+    $unpack = Join-Path $WorkDir ("python-unpack-" + [Guid]::NewGuid().ToString("N"))
+    Assert-ProjectChildPath $unpack | Out-Null
+    Expand-Archive -LiteralPath $archive -DestinationPath $unpack
+    $toolsRoot = Join-Path $unpack "tools"
+    if (-not (Test-Path -LiteralPath (Join-Path $toolsRoot "python.exe"))) {
+        throw "The CPython package does not contain tools/python.exe."
+    }
+    Move-Item -LiteralPath $toolsRoot -Destination $TargetRoot
+    Remove-LauncherDirectory $unpack
     $python = Get-EnvironmentPython "Portable" $TargetRoot
     if (-not (Test-CompatiblePython $python)) { throw "Portable Python is not compatible." }
-    $getPip = Join-Path $TargetRoot "get-pip.py"
-    Write-Step "Downloading the official pip bootstrap script..."
-    Invoke-WebRequest -UseBasicParsing -Uri $GetPipUrl -OutFile $getPip
-    try {
-        Invoke-Checked -FilePath $python -Arguments @(
-            $getPip, "--disable-pip-version-check", "--no-warn-script-location"
-        ) -Description "Installing pip"
-    }
-    finally {
-        if (Test-Path -LiteralPath $getPip) { Remove-Item -LiteralPath $getPip -Force }
-    }
+    Invoke-Checked -FilePath $python -Arguments @(
+        "-m", "ensurepip", "--upgrade"
+    ) -Description "Preparing pip in the portable Python environment"
     return $python
 }
 
@@ -485,7 +484,8 @@ function Install-PythonBootstrapTransaction {
 
 function Invoke-AcceleratorProbe {
     param([string]$Python, [string]$ExpectedBackend)
-    $output = @(& $Python -m omnivoice.accelerator --validate $ExpectedBackend --json 2>&1)
+    $probeScript = Join-Path $ProjectRoot "omnivoice\accelerator.py"
+    $output = @(& $Python -I -X utf8 $probeScript --validate $ExpectedBackend --requirements $RuntimeRequirementsPath --json 2>&1)
     $exitCode = $LASTEXITCODE
     $textOutput = ($output | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
     $jsonLine = $output | ForEach-Object { $_.ToString() } |
@@ -505,7 +505,11 @@ function Test-ReadyMarkerData {
         [string]$ProjectFingerprint, [string]$ProfileFingerprint, [object]$Profile
     )
     if ($null -eq $Marker) { return $false }
-    if ([int]$Marker.revision -ne $LauncherRevision) { return $false }
+    foreach ($field in @('revision', 'project', 'backend', 'hardware_fingerprint',
+        'profile_fingerprint', 'torch_version', 'torchaudio_version')) {
+        if ($null -eq $Marker.PSObject.Properties[$field]) { return $false }
+    }
+    if ([string]$Marker.revision -ne [string]$LauncherRevision) { return $false }
     if ([string]$Marker.project -ne $ProjectFingerprint) { return $false }
     if ([string]$Marker.backend -ne $ExpectedBackend) { return $false }
     if ([string]$Marker.hardware_fingerprint -ne $HardwareFingerprint) { return $false }
@@ -528,10 +532,14 @@ function Read-ReadyMarker {
 function Test-Runtime {
     param(
         [string]$Python, [string]$ExpectedBackend, [object]$Profile,
-        [string]$HardwareFingerprint, [string]$EnvironmentRoot
+        [string]$HardwareFingerprint, [string]$EnvironmentRoot,
+        [switch]$Quick
     )
     $script:LastRuntimeError = ""
     try {
+        if (-not (Test-Path -LiteralPath $Python)) {
+            throw "The application environment has not been installed yet."
+        }
         if (-not (Test-CompatiblePython $Python $Profile)) {
             throw "The environment uses an incompatible Python version."
         }
@@ -541,18 +549,27 @@ function Test-Runtime {
             -ProjectFingerprint (Get-ProjectFingerprint) `
             -ProfileFingerprint (Get-ProfileFingerprint $Profile) -Profile $Profile
         if (-not $markerValid) {
-            throw "The ready marker is missing, stale, or belongs to different hardware."
+            # A changed marker does not by itself mean installed packages are bad.
+            # Revalidate before deciding to download another complete environment.
+            Write-Step "Revalidating the existing runtime after an installer or hardware change..."
+            $Quick = $false
         }
-        & $Python -c "import accelerate, gradio, librosa, numpy, pydub, soundfile, tensorboardX, torch, torchaudio, transformers, webdataset; import omnivoice" 2>$null
-        if ($LASTEXITCODE -ne 0) { throw "One or more OmniVoice runtime imports failed." }
-        & $Python -m pip check *> $null
-        if ($LASTEXITCODE -ne 0) { throw "pip check found an inconsistent environment." }
+        if (-not $Quick) {
+            & $Python -E -s -c "import accelerate, gradio, librosa, numpy, pydub, soundfile, tensorboardX, torch, torchaudio, transformers, webdataset; import omnivoice" 2>$null
+            if ($LASTEXITCODE -ne 0) { throw "One or more OmniVoice runtime imports failed." }
+            & $Python -I -m pip check *> $null
+            if ($LASTEXITCODE -ne 0) { throw "pip check found an inconsistent environment." }
+        }
         $probe = Invoke-AcceleratorProbe $Python $ExpectedBackend
         if ([string]$probe.torch_version -ne [string]$Profile.torch_version) {
             throw "Installed torch $($probe.torch_version) does not match $($Profile.torch_version)."
         }
         if ([string]$probe.torchaudio_version -ne [string]$Profile.torchaudio_version) {
             throw "Installed torchaudio $($probe.torchaudio_version) does not match $($Profile.torchaudio_version)."
+        }
+        if (-not $markerValid) {
+            Write-ReadyMarker $EnvironmentRoot "auto" $ExpectedBackend $Profile `
+                $HardwareFingerprint $Python $probe
         }
         return $true
     }
@@ -615,8 +632,11 @@ function Install-BackendRuntime {
     }
     Invoke-Checked -FilePath $Python -Arguments $torchArguments `
         -Description "Installing PyTorch for $($Profile.display_name)"
+    $constraints = Join-Path $EnvironmentRoot "accelerator-constraints.txt"
+    @("torch==$($Profile.torch_version)", "torchaudio==$($Profile.torchaudio_version)") |
+        Set-Content -LiteralPath $constraints -Encoding ASCII
     Invoke-Checked -FilePath $Python -Arguments @(
-        "-m", "pip", "install", "-r", $RuntimeRequirementsPath, "--no-warn-script-location"
+        "-m", "pip", "install", "-r", $RuntimeRequirementsPath, "-c", $constraints, "--no-warn-script-location"
     ) -Description "Installing OmniVoice web dependencies"
     Invoke-Checked -FilePath $Python -Arguments @(
         "-m", "pip", "install", "--no-deps", "--no-build-isolation",
@@ -788,10 +808,10 @@ function Invoke-SelfTest {
             throw "$requiredPath is missing."
         }
     }
-    if ($PythonArchiveUrl -notmatch '^https://www\.python\.org/') {
-        throw "Portable Python must be downloaded from python.org."
+    if ($PythonArchiveUrl -notmatch '^https://api\.nuget\.org/v3-flatcontainer/python/') {
+        throw "Portable Python must use the official CPython NuGet package."
     }
-    if ($PythonArchiveMd5 -notmatch '^[0-9a-f]{32}$') {
+    if ($PythonArchiveSha256 -notmatch '^[0-9A-F]{64}$') {
         throw "Portable Python checksum is malformed."
     }
     $projectMetadata = Get-Content -LiteralPath (Join-Path $ProjectRoot "pyproject.toml") -Raw
@@ -910,7 +930,7 @@ function Invoke-Main {
         Write-Host "Bootstrap test completed with $selectedMode Python: $python"
         return
     }
-    if (-not (Test-Runtime $python $selectedBackend $profile $hardwareFingerprint $activeRoot)) {
+    if (-not (Test-Runtime $python $selectedBackend $profile $hardwareFingerprint $activeRoot -Quick:(-not $InstallOnly))) {
         if ($script:LastRuntimeError) { Write-Step "Runtime repair required: $script:LastRuntimeError" }
         $installed = Install-WithRecoveryChoice $selectedMode $systemPython `
             $requestedBackend $selectedBackend $matrix $hardwareFingerprint
@@ -932,7 +952,7 @@ function Invoke-Main {
         else { "cpu" }
     $browserJob = Start-BrowserWatcher
     try {
-        & $python -m omnivoice.cli.demo --ip 127.0.0.1 --port 7860 --device $device
+        & $python -E -s -m omnivoice.cli.demo --ip 127.0.0.1 --port 7860 --device $device
         if ($LASTEXITCODE -ne 0) {
             throw "The OmniVoice web interface exited with code $LASTEXITCODE."
         }
@@ -944,6 +964,8 @@ function Invoke-Main {
         }
     }
 }
+
+if ($MyInvocation.InvocationName -eq '.') { return }
 
 try {
     Invoke-Main

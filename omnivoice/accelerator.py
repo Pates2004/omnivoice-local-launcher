@@ -15,6 +15,7 @@ import os
 import platform
 import sys
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -236,13 +237,35 @@ def format_diagnostics(app_version: str = "unknown", torch_module=None) -> str:
     return "\n".join(f"{label}: {data[key]}" for label, key in labels)
 
 
+def check_runtime_requirements(requirements_path: str) -> None:
+    """Check declared dependencies without importing the entire application."""
+    from packaging.requirements import Requirement
+
+    for line in Path(requirements_path).read_text(encoding="utf-8-sig").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        requirement = Requirement(line)
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        try:
+            installed = importlib.metadata.version(requirement.name)
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise RuntimeError(f"Missing application dependency: {requirement.name}") from exc
+        if not requirement.specifier.contains(installed, prereleases=True):
+            raise RuntimeError(f"{requirement.name} {installed} does not satisfy {requirement}.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Inspect the OmniVoice accelerator runtime.")
     parser.add_argument("--validate", choices=("cuda", "rocm", "xpu", "cpu"))
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--requirements", help="Check application dependency versions.")
     args = parser.parse_args(argv)
 
     try:
+        if args.requirements:
+            check_runtime_requirements(args.requirements)
         info = validate_accelerator(args.validate) if args.validate else detect_accelerator()
         payload = {
             "ok": True,

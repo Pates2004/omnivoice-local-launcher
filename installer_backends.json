@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-09-07",
+  "updated": "2026-09-09",
   "profiles": {
     "cuda": {
       "display_name": "NVIDIA CUDA",
@@ -60,7 +60,7 @@
         "Ryzen AI 9 HX 470",
         "Ryzen AI 9 465"
       ],
-      "experimental": true
+      "experimental": false
     },
     "xpu": {
       "display_name": "Intel XPU",

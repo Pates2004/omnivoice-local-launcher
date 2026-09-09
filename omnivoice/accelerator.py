@@ -131,7 +131,12 @@ def validate_accelerator(expected_backend: str, torch_module=None) -> Accelerato
         raise RuntimeError("The installed PyTorch build is not a valid AMD ROCm build.")
     if expected_backend == "xpu" and (hip_version is not None or cuda_version is not None):
         raise RuntimeError("The installed PyTorch build is not a valid Intel XPU build.")
-    if expected_backend == "cpu" and (hip_version is not None or cuda_version is not None):
+    if expected_backend == "cpu" and (
+        hip_version is not None
+        or cuda_version is not None
+        or _version_attribute(torch_module, "xpu") is not None
+        or "+xpu" in detected.torch_version
+    ):
         raise RuntimeError("The installed PyTorch build is not CPU-only.")
 
     dtype = preferred_dtype(detected, torch_module)

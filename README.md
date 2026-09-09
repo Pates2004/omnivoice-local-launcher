@@ -36,6 +36,11 @@ The launcher detects compatible 64-bit Python installations and offers:
 Both choices are isolated inside this checkout; system Python packages are not
 modified. The selected Python mode is remembered in `.launcher/`.
 
+After moving to another PC or changing the GPU, use `start.bat -Backend Auto`
+to clear a previously forced backend and prepare the runtime for current hardware.
+Do not copy installed Python environments between computers. This web launcher
+does not manage OmniSonic settings/presets, so Power Switch belongs to OmniSonic only.
+
 Portable mode downloads the official [CPython NuGet package](https://www.nuget.org/packages/python/3.12.10)
 and verifies SHA-256; it does not register Python globally or change system PATH.
 This replaces the embedded ZIP, whose isolation broke pip builds of ROCm's source
@@ -58,6 +63,10 @@ Installation is transactional. A replacement is built and tested in
 `env.new/` or `venv.new/`; only a fully valid runtime replaces the active
 environment. The previous working environment is kept as `env.old/` or
 `venv.old/`.
+
+Python/backend preferences are saved only after a successful operation; failed
+repair retains the saved working choice. Paths containing spaces, exclamation
+marks and shell metacharacters are covered by batch-launch regression tests.
 
 ## Backend selection
 

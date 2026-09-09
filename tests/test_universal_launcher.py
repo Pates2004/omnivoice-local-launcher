@@ -84,6 +84,13 @@ def test_runtime_build_mismatch_is_rejected():
         validate_accelerator("rocm", FakeTorch(cuda="13.0"))
 
 
+def test_xpu_build_without_intel_gpu_is_not_a_cpu_build():
+    runtime = FakeTorch()
+    runtime.__version__ = "2.11.0+xpu"
+    with pytest.raises(RuntimeError, match="not CPU-only"):
+        validate_accelerator("cpu", runtime)
+
+
 def test_backend_matrix_is_complete_and_pyproject_is_backend_neutral():
     matrix = json.loads((ROOT / "installer_backends.json").read_text(encoding="utf-8"))
     assert set(matrix["profiles"]) == {"cuda", "rocm", "xpu", "cpu"}

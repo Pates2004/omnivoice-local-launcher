@@ -45,3 +45,6 @@ jobs:
       - name: Test startup logic and portable ROCm package installation
         shell: powershell
         run: .\tests\test_launcher.ps1 -Portable
+      - name: Test batch paths with special characters
+        shell: powershell
+        run: .\tests\test_batch_paths.ps1

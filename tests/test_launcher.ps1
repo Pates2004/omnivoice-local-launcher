@@ -67,6 +67,57 @@ Assert-Test (-not (Test-ReadyMarkerData ([pscustomobject]@{}) "rocm" "h" "p" "v"
     Assert-Test ($script:LastRuntimeError -match "GPU unavailable") "Backend error retained"
 }
 
+# Failed backend repair must not change the saved working Python/backend choice.
+& {
+    $WorkDir = Join-Path $ProjectRoot ('trash\preference-tests-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $WorkDir | Out-Null
+    $ModeFile = Join-Path $WorkDir 'mode.txt'
+    $BackendFile = Join-Path $WorkDir 'backend.txt'
+    'System' | Set-Content -LiteralPath $ModeFile -Encoding ASCII
+    'cuda' | Set-Content -LiteralPath $BackendFile -Encoding ASCII
+    $BackendWasExplicit = $true
+    $Backend = 'CPU'
+    $InstallOnly = $true
+    function Get-VideoControllers { return @() }
+    function Get-ProcessorName { return 'Test CPU' }
+    function Show-HardwareSummary {}
+    function Get-HideConsolePreference { return $false }
+    function Test-HiddenLaunchReady { return $false }
+    function Show-LauncherConsole {}
+    function Resolve-PythonMode { return [pscustomobject]@{ Mode = 'Portable'; SystemPython = $null } }
+    function Test-Runtime { return $false }
+    function Install-WithRecoveryChoice { throw 'Simulated failed repair' }
+    $failed = $false
+    try { Invoke-Main } catch {
+        if ($_.Exception.Message -notmatch 'Simulated failed repair') { throw }
+        $failed = $true
+    }
+    Assert-Test $failed 'Failed repair was exercised'
+    Assert-Test ((Get-Content -LiteralPath $ModeFile).Trim() -eq 'System') 'Python preference retained on failure'
+    Assert-Test ((Get-Content -LiteralPath $BackendFile).Trim() -eq 'cuda') 'Backend preference retained on failure'
+    function Install-WithRecoveryChoice {
+        return [pscustomobject]@{
+            Python = 'test-python'; Backend = 'cpu'; RequestedBackend = 'cpu'
+            Profile = (Get-BackendProfile $matrix 'cpu')
+        }
+    }
+    Invoke-Main
+    Assert-Test ((Get-Content -LiteralPath $ModeFile).Trim() -eq 'Portable') 'Successful Python choice saved'
+    Assert-Test ((Get-Content -LiteralPath $BackendFile).Trim() -eq 'cpu') 'Successful backend choice saved'
+}
+
+# stderr warnings must not override the structured probe result in PowerShell 5.1.
+& {
+    function Invoke-FakeProbePython {
+        Write-Error 'Benign device warning'
+        $global:LASTEXITCODE = 0
+        Write-Output '{"ok":true,"backend":"cpu"}'
+    }
+    $result = Invoke-AcceleratorProbe 'Invoke-FakeProbePython' 'cpu'
+    Assert-Test ($result.ok -and $result.backend -eq 'cpu') 'Warnings do not abort probe parsing'
+    Assert-Test ($ErrorActionPreference -eq 'Stop') 'Error policy restored after probe'
+}
+
 if ($Portable) {
     # Network integration regression: no GPU or global HIP SDK is needed to
     # build the small ROCm Python package that failed under embedded Python.

@@ -247,7 +247,9 @@ function Resolve-RequestedBackend {
 function Get-SavedText {
     param([string]$Path)
     if (Test-Path -LiteralPath $Path) {
-        return (Get-Content -LiteralPath $Path -Raw).Trim()
+        $value = Get-Content -LiteralPath $Path -Raw
+        if ($null -eq $value) { return "" }
+        return $value.Trim()
     }
     return ""
 }

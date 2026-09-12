@@ -127,8 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-asr",
         action="store_true",
         default=False,
-        help="Skip loading Whisper ASR model. Reference text auto-transcription"
-        " will be unavailable.",
+        help="Skip preloading Whisper ASR. It will load on demand when reference text is omitted.",
     )
     parser.add_argument(
         "--asr-model",
@@ -186,23 +185,28 @@ def build_demo(
         if duration is not None and float(duration) > 0:
             kw["duration"] = float(duration)
 
-        if mode == "clone":
-            if not ref_audio:
-                return None, "Please upload a reference audio."
-            kw["voice_clone_prompt"] = model.create_voice_clone_prompt(
-                ref_audio=ref_audio,
-                ref_text=ref_text,
-            )
-
         if instruct and instruct.strip():
             kw["instruct"] = instruct.strip()
 
         try:
+            if mode == "clone":
+                if not ref_audio:
+                    return None, "Please upload a reference audio."
+                kw["voice_clone_prompt"] = model.create_voice_clone_prompt(
+                    ref_audio=ref_audio,
+                    ref_text=(ref_text or "").strip() or None,
+                    preprocess_prompt=gen_config.preprocess_prompt,
+                )
             audio = model.generate(**kw)
+            waveform = np.asarray(audio[0], dtype=np.float32)
+            if waveform.ndim != 1 or not waveform.size or not np.isfinite(waveform).all():
+                raise ValueError("Generated audio must contain finite, non-empty mono samples")
+            # Saturate PCM values instead of wrapping loud samples across zero.
+            waveform = (np.clip(waveform, -1.0, 1.0) * 32767).astype(np.int16)
         except Exception as e:
+            logging.exception("Voice generation failed")
             return None, f"Error: {type(e).__name__}: {e}"
 
-        waveform = (audio[0] * 32767).astype(np.int16)
         return (sampling_rate, waveform), "Done."
 
     # Allow external wrappers (e.g. spaces.GPU for ZeroGPU Spaces)
@@ -380,6 +384,8 @@ by Xiaomi AI Lab Next-gen Kaldi team.
                         vc_po,
                     ],
                     outputs=[vc_audio, vc_status],
+                    concurrency_id="omnivoice-generation",
+                    concurrency_limit=1,
                 )
 
             # ==============================================================
@@ -477,6 +483,8 @@ by Xiaomi AI Lab Next-gen Kaldi team.
                     ]
                     + vd_groups,
                     outputs=[vd_audio, vd_status],
+                    concurrency_id="omnivoice-generation",
+                    concurrency_limit=1,
                 )
 
     return demo

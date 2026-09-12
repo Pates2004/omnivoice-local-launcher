@@ -39,6 +39,7 @@ from transformers import (
     get_constant_schedule_with_warmup,
 )
 
+from omnivoice.training.accelerator import prepare_training_objects
 from omnivoice.training.checkpoint import TrainLogger, load_checkpoint
 from omnivoice.training.checkpoint import save_checkpoint as engine_save_checkpoint
 
@@ -91,7 +92,8 @@ class OmniTrainer:
             self.model,
             self.optimizer,
             self.lr_scheduler,
-        ) = self.accelerator.prepare(
+        ) = prepare_training_objects(
+            self.accelerator,
             self.model,
             self.optimizer,
             self.lr_scheduler,

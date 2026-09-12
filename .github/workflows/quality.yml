@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install quality tools
-        run: python -m pip install "ruff>=0.11" packaging
+        run: python -m pip install "ruff>=0.11" packaging numpy
       - name: Lint and compile Python sources
         run: |
           ruff check omnivoice tests
@@ -24,6 +24,8 @@ jobs:
           python -m compileall -q omnivoice tests
       - name: Test lightweight dependency validation
         run: python -m unittest discover -s tests -p test_runtime_requirements.py -v
+      - name: Test voice cloning and long reference transcription
+        run: python -m unittest discover -s tests -p test_demo_reference.py -v
 
   windows-launcher:
     runs-on: windows-latest

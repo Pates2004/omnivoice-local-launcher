@@ -142,6 +142,7 @@ def test_lora_forward_and_backward(tmp_path):
 def test_lora_checkpoint_save_and_resume(tmp_path):
     from accelerate import Accelerator
 
+    from omnivoice.training.accelerator import prepare_training_objects
     from omnivoice.training.builder import build_model_and_tokenizer
     from omnivoice.training.checkpoint import load_checkpoint, save_checkpoint
 
@@ -153,7 +154,25 @@ def test_lora_checkpoint_save_and_resume(tmp_path):
     os.makedirs(output_dir, exist_ok=True)
 
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
-    model, optimizer = accelerator.prepare(model, optimizer)
+    model, optimizer = prepare_training_objects(accelerator, model, optimizer)
+
+    # Save a genuinely updated adapter and nonempty optimizer state, not just
+    # freshly initialized weights. This also exercises the selected GPU.
+    input_ids = torch.randint(0, 100, (1, 8, 20), device=accelerator.device)
+    audio_mask = torch.zeros(1, 20, dtype=torch.bool, device=accelerator.device)
+    audio_mask[:, 10:] = True
+    labels = input_ids.clone()
+    labels[:, :, :10] = -100
+    param_name, param = next((n, p) for n, p in model.named_parameters() if "lora_B" in n)
+    initial_weight = param.detach().cpu().clone()
+    loss = model(input_ids=input_ids, audio_mask=audio_mask, labels=labels).loss
+    assert torch.isfinite(loss)
+    accelerator.backward(loss)
+    optimizer.step()
+    optimizer.zero_grad()
+    saved_weight = param.detach().cpu().clone()
+    assert not torch.equal(initial_weight, saved_weight)
+    saved_momentum = optimizer.state[param]["exp_avg"].detach().cpu().clone()
 
     save_checkpoint(accelerator, model, tokenizer, output_dir, step=1, keep_last_n=-1)
 
@@ -169,9 +188,14 @@ def test_lora_checkpoint_save_and_resume(tmp_path):
     model2, _tokenizer2 = build_model_and_tokenizer(config)
     accelerator2 = Accelerator(project_dir=output_dir)
     optimizer2 = torch.optim.AdamW([p for p in model2.parameters() if p.requires_grad], lr=1e-4)
-    model2, optimizer2 = accelerator2.prepare(model2, optimizer2)
+    model2, optimizer2 = prepare_training_objects(accelerator2, model2, optimizer2)
     step = load_checkpoint(accelerator2, checkpoint_dir)
     assert step == 1
+    restored_param = dict(model2.named_parameters())[param_name]
+    torch.testing.assert_close(restored_param.detach().cpu(), saved_weight)
+    restored_state = optimizer2.state[restored_param]
+    assert restored_state["step"].item() == 1
+    torch.testing.assert_close(restored_state["exp_avg"].cpu(), saved_momentum)
 
 
 @requires_model
@@ -180,6 +204,7 @@ def test_merge_lora_produces_deployable_model(tmp_path):
 
     from omnivoice.cli.merge_lora import main as merge_main
     from omnivoice.models.omnivoice import OmniVoice
+    from omnivoice.training.accelerator import prepare_training_objects
     from omnivoice.training.builder import build_model_and_tokenizer
     from omnivoice.training.checkpoint import save_checkpoint
 
@@ -189,7 +214,7 @@ def test_merge_lora_produces_deployable_model(tmp_path):
     accelerator = Accelerator(project_dir=output_dir)
     os.makedirs(output_dir, exist_ok=True)
     optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-4)
-    model, optimizer = accelerator.prepare(model, optimizer)
+    model, optimizer = prepare_training_objects(accelerator, model, optimizer)
     save_checkpoint(accelerator, model, tokenizer, output_dir, step=1, keep_last_n=-1)
     checkpoint_dir = os.path.join(output_dir, "checkpoint-1")
 

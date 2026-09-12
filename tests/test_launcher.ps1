@@ -14,6 +14,19 @@ function Assert-Test {
     if (-not $Condition) { throw "Regression failed: $Message" }
 }
 
+# Empty preference files can be left by an interrupted write. They must behave
+# like a missing preference, not call Trim() on PowerShell's null result.
+& {
+    $scratch = Join-Path $ProjectRoot ('trash\empty-preference-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $scratch | Out-Null
+    $emptyFile = Join-Path $scratch 'backend.txt'
+    New-Item -ItemType File -Path $emptyFile | Out-Null
+    Assert-Test ((Get-SavedText $emptyFile) -eq '') 'Empty backend preference'
+    Assert-Test ((Get-SavedText (Join-Path $scratch 'missing.txt')) -eq '') 'Missing preference'
+    '  cpu  ' | Set-Content -LiteralPath $emptyFile -Encoding ASCII
+    Assert-Test ((Get-SavedText $emptyFile) -eq 'cpu') 'Whitespace is trimmed'
+}
+
 $matrix = Get-BackendMatrix
 $profile = Get-BackendProfile $matrix "rocm"
 $apu = @([pscustomobject]@{

@@ -68,6 +68,17 @@ Python/backend preferences are saved only after a successful operation; failed
 repair retains the saved working choice. Paths containing spaces, exclamation
 marks and shell metacharacters are covered by batch-launch regression tests.
 
+## Voice cloning and ASR
+
+The Voice Clone preprocessing checkbox is applied while preparing the reference
+prompt, and reference/ASR errors are reported in the operation's status field.
+Clone and design requests share one model queue, including requests from different
+browser tabs. Whisper supports references longer than 30 seconds. Short, clean
+references (3-10 seconds) are still recommended for voice cloning.
+
+`--no-asr` in the Python demo skips Whisper preloading, not on-demand transcription:
+leaving the reference transcript blank still loads Whisper when needed.
+
 ## Backend selection
 
 Normal users can leave automatic detection enabled. Manual overrides are
@@ -131,6 +142,18 @@ Run `powershell -File tests/test_launcher.ps1` for startup logic tests. Add
 `-Portable` to download portable Python, build the small ROCm source package,
 and verify pip after environment activation/renaming. No GPU or global HIP SDK
 is needed for that package-build test. Diagnostic artifacts remain in `trash/`.
+
+`tests/test_demo_reference.py` checks web clone options, errors, PCM clipping and
+long-reference transcription without loading model weights. For an optional
+real-device regression using cached OmniVoice/Whisper models:
+
+```powershell
+env\python.exe -B tests/smoke_web_inference.py --backend rocm --reference long-test.wav --output trash/web-smoke
+```
+
+Use a reference longer than 30 seconds and a new output directory for each run.
+With system-Python mode use `venv\Scripts\python.exe` instead. The test checks the
+actual web callbacks for cloning/design and verifies their shared GPU queue.
 
 ## Credits
 

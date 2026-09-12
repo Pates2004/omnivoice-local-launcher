@@ -69,6 +69,7 @@ from omnivoice.utils.audio import (
 )
 from omnivoice.utils.duration import RuleDurationEstimator
 from omnivoice.utils.lang_map import LANG_IDS, LANG_NAMES
+from omnivoice.utils.memory import release_memory
 from omnivoice.utils.text import (
     add_punctuation,
     chunk_text_punctuation,
@@ -323,6 +324,7 @@ class OmniVoice(PreTrainedModel):
         self._asr_pipe = None
         self._asr_model_name = "openai/whisper-large-v3-turbo"
         self._asr_device = None
+        self.unload_asr_after_transcription = False
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
@@ -410,6 +412,7 @@ class OmniVoice(PreTrainedModel):
             model=model_name,
             dtype=asr_dtype,
             device=device,
+            model_kwargs={"attn_implementation": "sdpa"},
         )
         logger.info("ASR model loaded on %s.", device)
 
@@ -423,26 +426,50 @@ class OmniVoice(PreTrainedModel):
         Args:
             audio: File path or ``(waveform, sample_rate)`` tuple.
                 Waveform can be a numpy array or torch.Tensor of shape
-                ``(1, T)`` or ``(T,)``.
+                ``(channels, T)`` or ``(T,)``; channels are mixed to mono.
 
         Returns:
             Transcribed text.
         """
-        if self._asr_pipe is None:
-            raise RuntimeError("ASR model is not loaded. Call model.load_asr_model() first.")
+        try:
+            if self._asr_pipe is None:
+                raise RuntimeError("ASR model is not loaded. Call model.load_asr_model() first.")
 
-        if isinstance(audio, str):
-            return self._asr_pipe(audio)["text"].strip()
-        else:
-            waveform, sr = audio
-            if isinstance(waveform, torch.Tensor):
-                waveform = waveform.cpu().numpy()
-            waveform = np.squeeze(waveform)  # (1, T) or (T,) → (T,)
-            audio_input = {
-                "array": waveform,
-                "sampling_rate": sr,
-            }
-            return self._asr_pipe(audio_input)["text"].strip()
+            if isinstance(audio, str):
+                return self._asr_pipe(audio, return_timestamps=True)["text"].strip()
+            else:
+                waveform, sr = audio
+                if isinstance(waveform, torch.Tensor):
+                    waveform = waveform.detach().cpu().float().numpy()
+                waveform = np.asarray(waveform, dtype=np.float32)
+                if waveform.ndim == 2:
+                    waveform = waveform.mean(axis=0)  # (channels, time) -> mono
+                if waveform.ndim != 1 or not waveform.size or not np.isfinite(waveform).all():
+                    raise ValueError("Reference audio must contain finite, non-empty samples")
+                audio_input = {
+                    "array": waveform,
+                    "sampling_rate": sr,
+                }
+                return self._asr_pipe(audio_input, return_timestamps=True)["text"].strip()
+        finally:
+            if getattr(self, "unload_asr_after_transcription", False):
+                self.unload_asr_model()
+
+    def unload_asr_model(self):
+        """Drop Whisper, then return unused CUDA/ROCm/XPU memory to the driver."""
+        self._asr_pipe = None
+        device = self._asr_device if self._asr_device is not None else self.device
+        release_memory(device, torch)
+
+    def release_inference_caches(self):
+        """Remove upstream tokenizer cache keys that retain its instance/weights."""
+        # Transformers Higgs tokenizer caches (self, module) globally with
+        # lru_cache. Deleting OmniVoice alone leaves the encoder alive after
+        # preset creation. Clearing this pure lookup cache is safe to repeat.
+        lookup = getattr(self.audio_tokenizer, "_get_conv1d_layers", None)
+        clear = getattr(lookup, "cache_clear", None)
+        if callable(clear):
+            clear()
 
     def get_input_embeddings(self):
         return self.llm.get_input_embeddings()
@@ -707,6 +734,7 @@ class OmniVoice(PreTrainedModel):
 
         return generated_audios
 
+    @torch.no_grad()
     def create_voice_clone_prompt(
         self,
         ref_audio: Union[str, tuple[torch.Tensor, int]],
@@ -1412,6 +1440,21 @@ class OmniVoice(PreTrainedModel):
 # ---------------------------------------------------------------------------
 # Standalone helpers
 # ---------------------------------------------------------------------------
+
+
+class WhisperASR:
+    """Standalone holder for the same ASR API, without allocating OmniVoice weights."""
+
+    def __init__(self, model_name="openai/whisper-large-v3-turbo", device="cpu"):
+        self._asr_pipe = None
+        self._asr_model_name = model_name
+        self._asr_device = device
+        self.device = device
+        self.unload_asr_after_transcription = False
+
+    load_asr_model = OmniVoice.load_asr_model
+    transcribe = OmniVoice.transcribe
+    unload_asr_model = OmniVoice.unload_asr_model
 
 
 def _get_packed_mask(document_ids):

@@ -76,6 +76,11 @@ Clone and design requests share one model queue, including requests from differe
 browser tabs. Whisper supports references longer than 30 seconds. Short, clean
 references (3-10 seconds) are still recommended for voice cloning.
 
+Empty/non-finite reference waveforms, invalid sample rates and clips shorter than
+one tokenizer frame are rejected before synthesis. Array/tensor references are
+converted to float32 mono before resampling/tokenization, including float64
+arrays and bfloat16 tensors.
+
 `--no-asr` in the Python demo skips Whisper preloading, not on-demand transcription:
 leaving the reference transcript blank still loads Whisper when needed.
 

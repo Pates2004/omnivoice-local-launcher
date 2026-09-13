@@ -64,6 +64,7 @@ from omnivoice.utils.audio import (
     cross_fade_chunks,
     fade_and_pad_audio,
     load_audio,
+    normalize_reference_waveform,
     remove_silence,
     trim_long_audio,
 )
@@ -441,11 +442,7 @@ class OmniVoice(PreTrainedModel):
                 waveform, sr = audio
                 if isinstance(waveform, torch.Tensor):
                     waveform = waveform.detach().cpu().float().numpy()
-                waveform = np.asarray(waveform, dtype=np.float32)
-                if waveform.ndim == 2:
-                    waveform = waveform.mean(axis=0)  # (channels, time) -> mono
-                if waveform.ndim != 1 or not waveform.size or not np.isfinite(waveform).all():
-                    raise ValueError("Reference audio must contain finite, non-empty samples")
+                waveform = normalize_reference_waveform(waveform, sr)[0]
                 audio_input = {
                     "array": waveform,
                     "sampling_rate": sr,
@@ -764,14 +761,12 @@ class OmniVoice(PreTrainedModel):
 
         if isinstance(ref_audio, str):
             ref_wav = load_audio(ref_audio, self.sampling_rate)
+            ref_wav = normalize_reference_waveform(ref_wav, self.sampling_rate)
         else:
             waveform, sr = ref_audio
             if isinstance(waveform, torch.Tensor):
-                waveform = waveform.cpu().numpy()
-            if waveform.ndim == 1:
-                waveform = waveform[np.newaxis, :]
-            if waveform.shape[0] > 1:
-                waveform = np.mean(waveform, axis=0, keepdims=True)
+                waveform = waveform.detach().cpu().float().numpy()
+            waveform = normalize_reference_waveform(waveform, sr)
             if sr != self.sampling_rate:
                 waveform = torchaudio.functional.resample(
                     torch.from_numpy(waveform),
@@ -780,7 +775,7 @@ class OmniVoice(PreTrainedModel):
                 ).numpy()
             ref_wav = waveform
 
-        ref_rms = float(np.sqrt(np.mean(ref_wav**2)))
+        ref_rms = float(np.sqrt(np.mean(np.square(ref_wav, dtype=np.float64))))
         if 0 < ref_rms < 0.1:
             ref_wav = ref_wav * 0.1 / ref_rms
 
@@ -812,6 +807,13 @@ class OmniVoice(PreTrainedModel):
                 ref_duration,
             )
 
+        chunk_size = self.audio_tokenizer.config.hop_length
+        if ref_wav.shape[-1] < chunk_size:
+            raise ValueError(
+                "Reference audio is too short for the audio tokenizer. "
+                "Use a recording containing at least 3 seconds of speech."
+            )
+
         # Auto-transcribe if ref_text not provided
         if ref_text is None:
             if self._asr_pipe is None:
@@ -820,7 +822,6 @@ class OmniVoice(PreTrainedModel):
             ref_text = self.transcribe((ref_wav, self.sampling_rate))
             logger.debug("Auto-transcribed ref_text: %s", ref_text)
 
-        chunk_size = self.audio_tokenizer.config.hop_length
         clip_size = int(ref_wav.shape[-1] % chunk_size)
         ref_wav = ref_wav[:, :-clip_size] if clip_size > 0 else ref_wav
         # numpy → torch at tokenizer boundary

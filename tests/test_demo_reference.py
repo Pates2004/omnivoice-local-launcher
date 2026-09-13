@@ -5,7 +5,7 @@ import logging
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import numpy as np
 
@@ -13,6 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_function(relative_path, name, namespace):
+    if relative_path == "omnivoice/models/omnivoice.py":
+        namespace["normalize_reference_waveform"] = load_function(
+            "omnivoice/utils/audio.py",
+            "normalize_reference_waveform",
+            {"np": np},
+        )
     tree = ast.parse((ROOT / relative_path).read_text(encoding="utf-8"))
     method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
     method.decorator_list = []
@@ -137,6 +143,89 @@ class WhisperInputTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "finite, non-empty"):
                 self.transcribe(self.holder, (np.asarray(samples), 16000))
         self.pipe.assert_not_called()
+
+    def test_invalid_sample_rate_is_rejected_before_asr(self):
+        for rate in (0, -1, True, "16000", np.nan, 16000.5):
+            with self.subTest(rate=rate), self.assertRaisesRegex(ValueError, "sample rate"):
+                self.transcribe(self.holder, (np.ones(100), rate))
+        self.pipe.assert_not_called()
+
+
+class CloneInputTests(unittest.TestCase):
+    def setUp(self):
+        self.torch = SimpleNamespace(Tensor=type("Tensor", (), {}), from_numpy=MagicMock())
+        self.tokenizer = SimpleNamespace(
+            config=SimpleNamespace(hop_length=480), device="cpu", encode=MagicMock()
+        )
+        self.model = SimpleNamespace(
+            audio_tokenizer=self.tokenizer,
+            sampling_rate=24000,
+            _asr_pipe=None,
+            load_asr_model=Mock(),
+            transcribe=Mock(return_value="transcript"),
+        )
+        self.source = Mock()
+        self.method = load_function(
+            "omnivoice/models/omnivoice.py",
+            "create_voice_clone_prompt",
+            dict(
+                np=np,
+                torch=self.torch,
+                load_audio=self.source,
+                logger=logging.getLogger(__name__),
+                VoiceClonePrompt=SimpleNamespace,
+                add_punctuation=lambda text: text,
+            ),
+        )
+
+    def test_empty_nonfinite_and_wrong_shape_references_never_reach_models(self):
+        for samples in ([], [np.nan], [np.inf], np.zeros((0, 200)), np.ones((2, 3, 4))):
+            with (
+                self.subTest(samples=str(samples)),
+                self.assertRaisesRegex(ValueError, "finite, non-empty"),
+            ):
+                self.method(self.model, (np.asarray(samples), 24000), preprocess_prompt=False)
+        self.tokenizer.encode.assert_not_called()
+        self.model.load_asr_model.assert_not_called()
+
+    def test_too_short_reference_is_rejected_before_whisper_and_tokenizer(self):
+        with self.assertRaisesRegex(ValueError, "too short"):
+            self.method(self.model, (np.ones(479), 24000), preprocess_prompt=False)
+        self.tokenizer.encode.assert_not_called()
+        self.model.load_asr_model.assert_not_called()
+
+    def test_float64_stereo_is_mixed_and_converted_before_tokenizer(self):
+        samples = np.array([[0.25] * 500, [0.75] * 500], dtype=np.float64)
+        prompt = self.method(
+            self.model, (samples, 24000), ref_text="Test.", preprocess_prompt=False
+        )
+        waveform = self.torch.from_numpy.call_args.args[0]
+        self.assertEqual(waveform.dtype, np.float32)
+        self.assertEqual(waveform.shape, (1, 480))
+        np.testing.assert_array_equal(waveform, 0.5)
+        self.assertEqual(prompt.ref_text, "Test.")
+
+    def test_invalid_sample_rate_does_not_reach_resampler(self):
+        for rate in (0, -2, True, "24000", float("inf")):
+            with self.subTest(rate=rate), self.assertRaisesRegex(ValueError, "sample rate"):
+                self.method(self.model, (np.ones(500), rate), preprocess_prompt=False)
+        self.tokenizer.encode.assert_not_called()
+
+    def test_invalid_file_samples_are_validated_too(self):
+        self.source.return_value = np.array([[np.nan] * 500])
+        with self.assertRaisesRegex(ValueError, "finite, non-empty"):
+            self.method(self.model, "reference.wav", preprocess_prompt=False)
+        self.tokenizer.encode.assert_not_called()
+
+    def test_low_precision_tensor_conversion_uses_detached_float_cpu_array(self):
+        tensor = self.torch.Tensor()
+        tensor.detach = Mock()
+        tensor.detach.return_value.cpu.return_value.float.return_value.numpy.return_value = np.ones(
+            500, dtype=np.float32
+        )
+        self.method(self.model, (tensor, 24000), ref_text="Test.", preprocess_prompt=False)
+        tensor.detach.assert_called_once()
+        tensor.detach.return_value.cpu.return_value.float.assert_called_once()
 
 
 if __name__ == "__main__":

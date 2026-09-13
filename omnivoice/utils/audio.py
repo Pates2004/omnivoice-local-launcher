@@ -52,6 +52,25 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def normalize_reference_waveform(waveform, sample_rate):
+    """Validate channels-first audio and return finite float32 mono (1, T)."""
+    if (
+        isinstance(sample_rate, (bool, np.bool_))
+        or not isinstance(sample_rate, (int, np.integer))
+        or sample_rate <= 0
+    ):
+        raise ValueError("Reference sample rate must be a positive integer")
+    waveform = np.asarray(waveform, dtype=np.float32)
+    if waveform.ndim == 1:
+        waveform = waveform[np.newaxis, :]
+    if waveform.ndim != 2 or not waveform.size or not np.isfinite(waveform).all():
+        raise ValueError("Reference audio must contain finite, non-empty samples")
+    if waveform.shape[0] > 1:
+        # Float64 accumulation avoids float32 overflow on otherwise finite input.
+        waveform = waveform.mean(axis=0, keepdims=True, dtype=np.float64).astype(np.float32)
+    return waveform
+
+
 def load_waveform(audio_path: str):
     """Load audio from a file path, returning (data, sample_rate).
 

@@ -25,6 +25,7 @@ def main():
 
     import numpy as np
     import soundfile as sf
+    import torch
 
     import omnivoice
     from omnivoice import OmniVoice
@@ -58,6 +59,27 @@ def main():
         load_asr=False,
         asr_device=info.device,
     )
+    # Exercise the real tokenizer with inputs that previously failed with a
+    # float64 dtype mismatch or unsupported bfloat16 -> numpy conversion.
+    for waveform in (
+        reference[: rate * 3].T.astype(np.float64),
+        torch.from_numpy(reference[: rate * 3].T.copy()).to(torch.bfloat16).requires_grad_(),
+    ):
+        prompt = model.create_voice_clone_prompt(
+            (waveform, rate),
+            ref_text="Synthetic reference.",
+            preprocess_prompt=False,
+        )
+        assert prompt.ref_audio_tokens.numel() and torch.isfinite(prompt.ref_audio_tokens).all()
+    for waveform in (np.zeros(100), np.full(500, np.nan)):
+        try:
+            model.create_voice_clone_prompt((waveform, 24000), preprocess_prompt=False)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Invalid reference reached the tokenizer")
+    print("Float64/bfloat16 reference tokenization and invalid-input rejection: OK", flush=True)
+
     demo = build_demo(model, "k2-fsa/OmniVoice")
     try:
         with socket.socket() as port_reservation:
@@ -136,6 +158,7 @@ def main():
             design="OK",
             error_status="OK",
             http_startup="OK",
+            reference_dtypes="OK",
         )
         (args.output / "report.json").write_text(
             json.dumps(report, indent=2, ensure_ascii=False),

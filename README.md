@@ -153,12 +153,14 @@ long-reference transcription without loading model weights. For an optional
 real-device regression using cached OmniVoice/Whisper models:
 
 ```powershell
-env\python.exe -B tests/smoke_web_inference.py --backend rocm --reference long-test.wav --output trash/web-smoke
+env\python.exe -B tests/smoke_web_inference.py --backend rocm --reference long-test.wav --output Workspace/web-smoke
 ```
 
 Use a reference longer than 30 seconds and a new output directory for each run.
 With system-Python mode use `venv\Scripts\python.exe` instead. The test checks the
 actual web callbacks for cloning/design and verifies their shared GPU queue.
+For a synthetic or repetitive reference, pass `--reference-text` with the
+transcript of its first eight seconds; otherwise the test checks on-demand ASR.
 
 ## Credits
 

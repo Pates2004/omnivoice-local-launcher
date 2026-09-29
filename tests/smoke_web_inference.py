@@ -13,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("cuda", "rocm", "xpu", "cpu"), required=True)
     parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument("--reference-text", default="")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -106,25 +107,25 @@ def main():
             "This is a local launcher voice test.",
             "Auto",
             str(short_reference),
+            args.reference_text,
             "",
-            "",
-            4,
+            32,
             2.0,
             True,
             1.0,
-            1.0,
-            False,
+            None,
+            True,
             True,
         )
         assert status == "Done.", status
         designed, status = design.fn(
             "This is a designed voice test.",
             "Auto",
-            4,
+            32,
             2.0,
             True,
             1.0,
-            1.0,
+            None,
             True,
             True,
         )
@@ -140,12 +141,12 @@ def main():
             str(args.output / "missing.wav"),
             "",
             "",
-            4,
+            32,
             2.0,
             True,
             1.0,
-            1.0,
-            False,
+            None,
+            True,
             True,
         )
         assert failed is None and status.startswith("Error:"), status

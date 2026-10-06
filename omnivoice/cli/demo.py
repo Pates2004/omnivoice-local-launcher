@@ -118,6 +118,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ip", default="0.0.0.0", help="Server IP (default: 0.0.0.0).")
     parser.add_argument("--port", type=int, default=7860, help="Server port (default: 7860).")
     parser.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="Open the web interface in a browser after the server is ready.",
+    )
+    parser.add_argument(
         "--root-path",
         default=None,
         help="Root path for reverse proxy.",
@@ -527,6 +532,7 @@ def main(argv=None) -> int:
         server_port=args.port,
         share=args.share,
         root_path=args.root_path,
+        inbrowser=args.open_browser,
     )
     return 0
 

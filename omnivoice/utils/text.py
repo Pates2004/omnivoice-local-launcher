@@ -25,6 +25,7 @@ Provides:
   etc.) into their spoken form, while preserving inline control syntax.
 """
 
+import importlib.util
 import logging
 import re
 from typing import Callable, List, Optional
@@ -243,16 +244,38 @@ _BRACKET_TAG_RE = re.compile(r"\[[^\[\]]*\]")
 # Uppercase pinyin followed by a tone digit 1-5 (Chinese pronunciation control).
 _PINYIN_TONE_RE = re.compile(r"[A-Z]+[1-5]")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_INTEGER_OR_COMPOUND_RE = re.compile(
+    r"(?P<compound>(?<!\w)[+-]?\d+(?:(?:[.,:/-]|\s+(?=\d{3}\b))\d+)+(?!\w))"
+    r"|(?P<integer>(?<![\w.,:/+\-$€£¥'’])[+-]?\d+(?!\w|[.,:/\-'’]\d|[%$€£¥]))"
+)
 
 _TN_INSTALL_MSG = (
-    "Text normalization (normalize_text=True) requires WeTextProcessing, which "
-    "is not installed.\n"
-    "  pip install WeTextProcessing         # or:  pip install 'omnivoice[tn]'\n"
-    "WeTextProcessing depends on pynini, which has no prebuilt wheel for macOS "
-    "arm64 (Apple Silicon). On macOS, install pynini from conda-forge first:\n"
-    "  conda install -c conda-forge pynini\n"
-    "then:  pip install WeTextProcessing"
+    "Full Chinese/English normalization requires optional WeTextProcessing and a working pynini "
+    "runtime. Native Windows pynini wheels are not bundled. Basic integer normalization uses "
+    "num2words for its supported languages instead."
 )
+
+
+class TextNormalizationError(ValueError):
+    """A normalization failure with a stable message key for localized interfaces."""
+
+    def __init__(self, message_key, language, detail=None):
+        self.message_key = message_key
+        self.language = language
+        messages = {
+            "normalization_missing_dependency": (
+                f"Text normalization dependencies are unavailable for language '{language}'. "
+                "Basic normalization requires num2words; Chinese may require optional "
+                "WeTextProcessing with a working pynini runtime."
+            ),
+            "normalization_unsupported_language": (
+                f"Text normalization is not supported for language '{language}' by the installed "
+                "normalization libraries."
+            ),
+            "normalization_failed": f"Text normalization failed for language '{language}'.",
+        }
+        super().__init__(detail or messages[message_key])
+
 
 # Normalizer construction builds FSTs and is comparatively slow, so instances
 # are cached per language for the lifetime of the process.
@@ -291,15 +314,65 @@ def _get_en_normalizer():
     return _EN_NORMALIZER
 
 
+def _has_wetext(language):
+    if (language == "zh" and _ZH_NORMALIZER is not None) or (
+        language == "en" and _EN_NORMALIZER is not None
+    ):
+        return True
+    try:
+        return all(importlib.util.find_spec(name) is not None for name in ("tn", "pynini"))
+    except (ImportError, ValueError):
+        return False
+
+
+def _check_num2words_support(language):
+    try:
+        from num2words import CONVERTER_CLASSES
+    except (ImportError, OSError) as exc:
+        raise TextNormalizationError("normalization_missing_dependency", language) from exc
+    except Exception as exc:
+        raise TextNormalizationError("normalization_failed", language) from exc
+    if language in CONVERTER_CLASSES:
+        return language
+    locale = re.fullmatch(r"([a-z]{2})[_-]([a-z]{2,3})", language, flags=re.IGNORECASE)
+    if locale:
+        base, region = locale.groups()
+        regional_code = f"{base.lower()}_{region.upper()}"
+        if regional_code in CONVERTER_CLASSES:
+            return regional_code
+        if base.lower() in CONVERTER_CLASSES:
+            return base.lower()
+    key = (
+        "normalization_missing_dependency"
+        if language == "zh"
+        else "normalization_unsupported_language"
+    )
+    raise TextNormalizationError(key, language)
+
+
+def check_normalization_support(language: Optional[str]) -> str:
+    """Return the usable normalization mode without constructing a WeText FST.
+
+    Callers with no text should select an explicit language. None/Auto checks
+    the API's non-CJK default (English); normalize_text resolves CJK from text.
+    Optional native-library loading can still fail later with a localized error.
+    """
+    code = _resolve_lang_code(language, "")
+    if code in {"zh", "en"} and _has_wetext(code):
+        return "wetext"
+    _check_num2words_support(code)
+    return "num2words"
+
+
 def _resolve_lang_code(language: Optional[str], text: str) -> str:
     """Map a language name/code to ``"zh"``/``"en"``/other code.
 
-    When ``language`` is ``None`` (or unrecognized), fall back to detecting
-    Chinese vs. English by the presence of CJK characters.
+    When ``language`` is ``None``, empty or ``Auto``, detect Chinese vs. English
+    by the presence of CJK characters. Other names/codes remain explicit.
     """
     if language is not None:
         code = language.strip().lower()
-        if code and code != "none":
+        if code and code not in {"none", "auto"}:
             if code in ("zh", "en"):
                 return code
             try:
@@ -316,23 +389,37 @@ def _resolve_lang_code(language: Optional[str], text: str) -> str:
 
 
 def _num2words_segment(text: str, lang: str) -> str:
-    """Best-effort integer-to-words fallback for non zh/en languages."""
+    """Convert standalone integers, preserving compound numeric formats verbatim."""
+    converter_language = _check_num2words_support(lang)
     try:
         from num2words import num2words
-    except ImportError:
-        return text  # fallback is best-effort; silently skip when unavailable
+    except (ImportError, OSError) as exc:
+        raise TextNormalizationError("normalization_missing_dependency", lang) from exc
 
     def _repl(match):
+        if match.group("integer") is None:
+            return match.group()
         try:
-            return num2words(int(match.group()), lang=lang)
-        except Exception:
-            return match.group()  # unsupported language / value: leave as-is
+            value = int(match.group())
+            # num2words 0.5.14's Polish converter cannot process a negative int,
+            # even though it exposes the localized sign. Keep other languages'
+            # native signed-number behavior and work around this upstream bug.
+            if converter_language == "pl" and value < 0:
+                from num2words import CONVERTER_CLASSES
 
-    return re.sub(r"\d+", _repl, text)
+                sign = CONVERTER_CLASSES["pl"].negword.strip()
+                return f"{sign} {num2words(-value, lang=converter_language)}"
+            return num2words(value, lang=converter_language)
+        except NotImplementedError as exc:
+            raise TextNormalizationError("normalization_unsupported_language", lang) from exc
+        except Exception as exc:
+            raise TextNormalizationError("normalization_failed", lang) from exc
+
+    return _INTEGER_OR_COMPOUND_RE.sub(_repl, text)
 
 
 def _normalize_segment(fn: Callable[[str], str], segment: str) -> str:
-    """Normalize one non-protected segment, never raising on bad input.
+    """Normalize one non-protected segment while preserving surrounding whitespace.
 
     Leading/trailing whitespace is preserved explicitly because the underlying
     normalizers strip it, which would otherwise glue words to an adjacent
@@ -342,14 +429,7 @@ def _normalize_segment(fn: Callable[[str], str], segment: str) -> str:
         return segment
     lead = segment[: len(segment) - len(segment.lstrip())]
     trail = segment[len(segment.rstrip()) :]
-    try:
-        core = fn(segment.strip())
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(
-            "Text normalization failed on a segment (%s); keeping it unchanged.",
-            type(e).__name__,
-        )
-        return segment
+    core = fn(segment.strip())
     return lead + core + trail
 
 
@@ -383,12 +463,12 @@ def _apply_with_protection(text: str, fn: Callable[[str], str], protect_pinyin: 
 
 
 def normalize_text(text: str, language: Optional[str] = None) -> str:
-    """Normalize numbers, dates, currency, etc. into their spoken form.
+    """Normalize text using optional rich rules or a basic integer-only fallback.
 
-    Chinese is routed to WeTextProcessing's ``ZhNormalizer`` and English to its
-    ``EnNormalizer`` (configured to only rewrite numeric/symbolic tokens). Any
-    other language falls back to ``num2words`` for bare integers when it is
-    installed, otherwise the text is returned unchanged.
+    Chinese/English use WeTextProcessing when available. Otherwise supported
+    languages use num2words for standalone integers only, leaving compound
+    numeric formats (decimals, dates and times) and alphanumeric identifiers
+    unchanged. Unsupported languages or missing dependencies raise an error.
 
     Inline OmniVoice control syntax is preserved: bracketed non-verbal tags
     (``[laughter]``) and CMU pronunciation overrides (``[B EY1 S]``) are passed
@@ -398,24 +478,34 @@ def normalize_text(text: str, language: Optional[str] = None) -> str:
     Args:
         text: Input text.
         language: Language code (``"en"``/``"zh"``) or full name (``"English"``).
-            ``None`` auto-detects Chinese vs. English by script.
+            ``None`` or ``"Auto"`` detects Chinese vs. English by script, not other
+            languages. User interfaces should require an explicit language.
 
     Returns:
         The normalized text.
 
     Raises:
-        ImportError: For Chinese/English when the optional ``omnivoice[tn]``
-            dependency (WeTextProcessing) is not installed.
+        TextNormalizationError: Normalization is unavailable or failed.
     """
     if not text or not text.strip():
         return text
 
     code = _resolve_lang_code(language, text)
-    if code == "zh":
-        normalizer = _get_zh_normalizer()
-        return _apply_with_protection(text, normalizer.normalize, protect_pinyin=True)
-    if code == "en":
-        normalizer = _get_en_normalizer()
-        return _apply_with_protection(text, normalizer.normalize, protect_pinyin=False)
-    # Other languages: best-effort integer conversion via num2words.
-    return _apply_with_protection(text, lambda s: _num2words_segment(s, code), protect_pinyin=False)
+    try:
+        mode = check_normalization_support(code)
+        if mode == "wetext":
+            try:
+                normalizer = _get_zh_normalizer() if code == "zh" else _get_en_normalizer()
+            except (ImportError, OSError):
+                _check_num2words_support(code)
+                mode = "num2words"
+        normalize = (
+            normalizer.normalize
+            if mode == "wetext"
+            else lambda segment: _num2words_segment(segment, code)
+        )
+        return _apply_with_protection(text, normalize, protect_pinyin=code == "zh")
+    except TextNormalizationError:
+        raise
+    except Exception as exc:
+        raise TextNormalizationError("normalization_failed", code) from exc

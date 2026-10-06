@@ -34,6 +34,7 @@ import os
 import re
 from dataclasses import dataclass, fields
 from functools import partial
+from numbers import Real
 from typing import Any, List, Optional, Union
 
 import numpy as np
@@ -120,11 +121,54 @@ def _autocast_flex_attention(module, query, key, value, *args, **kwargs):
 _VOICE_CLONE_PROMPT_FORMAT_VERSION = 1
 
 
+def _validate_audio_tokens(tokens, num_codebooks=None, vocab_size=None, mask_id=None):
+    if (
+        not isinstance(tokens, torch.Tensor)
+        or tokens.layout != torch.strided
+        or tokens.dtype not in {torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64}
+    ):
+        raise ValueError("Voice clone audio tokens must be a dense integer tensor")
+    if tokens.device.type == "meta" or tokens.ndim != 2 or not tokens.numel():
+        raise ValueError("Voice clone audio tokens must have non-empty shape (codebooks, frames)")
+    if num_codebooks is not None and tokens.shape[0] != num_codebooks:
+        raise ValueError(f"Voice clone audio tokens must contain {num_codebooks} codebooks")
+    if tokens.min().item() < 0 or (vocab_size is not None and tokens.max().item() >= vocab_size):
+        raise ValueError("Voice clone audio token IDs are outside the supported range")
+    if mask_id is not None and (tokens == mask_id).any().item():
+        raise ValueError("Voice clone audio tokens must not contain the generation mask token")
+
+
+def _validate_generated_audio(audio):
+    audio = np.asarray(audio)
+    if (
+        audio.ndim != 2
+        or audio.shape[0] != 1
+        or not audio.size
+        or audio.dtype.kind not in "fiu"
+        or not np.isfinite(audio).all()
+    ):
+        raise ValueError("Generated audio must contain finite, non-empty mono samples")
+    return audio
+
+
 @dataclass
 class VoiceClonePrompt:
     ref_audio_tokens: torch.Tensor  # (C, T)
     ref_text: str
     ref_rms: float
+
+    def validate(self) -> None:
+        """Reject malformed prompt data before it reaches inference or serialization."""
+        _validate_audio_tokens(self.ref_audio_tokens)
+        if not isinstance(self.ref_text, str):
+            raise ValueError("Voice clone reference text must be a string")
+        if (
+            isinstance(self.ref_rms, (bool, np.bool_))
+            or not isinstance(self.ref_rms, (int, float, np.integer, np.floating))
+            or not math.isfinite(self.ref_rms)
+            or self.ref_rms < 0
+        ):
+            raise ValueError("Voice clone reference RMS must be a finite, non-negative number")
 
     def save(self, path: str) -> None:
         """Save this prompt to ``path`` for reuse in a later session.
@@ -136,6 +180,7 @@ class VoiceClonePrompt:
         Args:
             path: Destination file path (e.g. ``"my_voice.pt"``).
         """
+        self.validate()
         torch.save(
             {
                 "format_version": _VOICE_CLONE_PROMPT_FORMAT_VERSION,
@@ -161,15 +206,22 @@ class VoiceClonePrompt:
         Returns:
             The restored :class:`VoiceClonePrompt`.
         """
-        data = torch.load(path, map_location=map_location, weights_only=True)
+        data = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(data, dict):
+            raise ValueError("VoiceClonePrompt file must contain a dictionary")
         version = data.get("format_version")
-        if version != _VOICE_CLONE_PROMPT_FORMAT_VERSION:
+        if type(version) is not int or version != _VOICE_CLONE_PROMPT_FORMAT_VERSION:
             raise ValueError(f"Unsupported VoiceClonePrompt format version: {version}")
-        return cls(
+        if not {"ref_audio_tokens", "ref_text", "ref_rms"}.issubset(data):
+            raise ValueError("VoiceClonePrompt file is missing required fields")
+        prompt = cls(
             ref_audio_tokens=data["ref_audio_tokens"],
             ref_text=data["ref_text"],
             ref_rms=data["ref_rms"],
         )
+        prompt.validate()
+        prompt.ref_audio_tokens = prompt.ref_audio_tokens.to(map_location)
+        return prompt
 
 
 @dataclass
@@ -208,6 +260,8 @@ class GenerationTask:
     speed: Optional[List[float]] = None
 
     def get_indices(self, config: OmniVoiceGenerationConfig, frame_rate: int):
+        if config.audio_chunk_duration <= 0:
+            return list(range(self.batch_size)), []
         threshold = int(config.audio_chunk_threshold * frame_rate)
         short_idx = [i for i, length in enumerate(self.target_lens) if length <= threshold]
         long_idx = [i for i, length in enumerate(self.target_lens) if length > threshold]
@@ -631,20 +685,19 @@ class OmniVoice(PreTrainedModel):
                 or :meth:`VoiceClonePrompt.load`.
                 If provided, it overrides ``ref_text`` and ``ref_audio``.
             instruct: Style instruction for voice design mode.
-            duration: Fixed output duration in seconds. If a single float,
+            duration: Finite, positive output duration in seconds. If a single float,
                 applies to all items; if a list, one value per item.
                 ``None`` (default) lets the model estimate duration from text.
                 Overrides ``speed`` when both are provided.
-            speed: Speaking speed factor. ``> 1.0`` for faster, ``< 1.0`` for
+            speed: Finite, positive speaking speed factor. ``> 1.0`` for faster, ``< 1.0`` for
                 slower. If a list, one value per item. ``None`` (default) uses
                 the model's default estimation.
             normalize_text: If ``True``, run text normalization on the target
-                text before synthesis (numbers, dates, currency, etc. are
-                converted to their spoken form, e.g. ``"2345"`` ->
-                ``"twenty three forty five"``). Default ``False`` (paper
-                reproducibility is unaffected). Chinese/English require the
-                optional ``omnivoice[tn]`` dependency (WeTextProcessing); other
-                languages use ``num2words`` for bare integers when installed.
+                text before synthesis. Supported languages, including English,
+                use ``num2words`` for bare integers. Optional WeTextProcessing
+                provides richer Chinese/English rules for dates and currency;
+                Chinese requires this optional ``omnivoice[tn]`` dependency.
+                Default ``False`` (paper reproducibility is unaffected).
                 Inline control syntax (``[laughter]``, ``[B EY1 S]``, pinyin
                 tone markers) is preserved. See :func:`omnivoice.utils.text.normalize_text`.
             generation_config: Explicit config object. If provided, takes
@@ -856,11 +909,15 @@ class OmniVoice(PreTrainedModel):
         """
         tokenizer_device = self.audio_tokenizer.device
         if isinstance(tokens, list):
+            if not tokens:
+                raise ValueError("No audio chunks were generated")
             chunk_audios = [
-                self.audio_tokenizer.decode(t.to(tokenizer_device).unsqueeze(0))
-                .audio_values[0]
-                .cpu()
-                .numpy()
+                _validate_generated_audio(
+                    self.audio_tokenizer.decode(t.to(tokenizer_device).unsqueeze(0))
+                    .audio_values[0]
+                    .cpu()
+                    .numpy()
+                )
                 for t in tokens
             ]
             audio_waveform = cross_fade_chunks(chunk_audios, self.sampling_rate)
@@ -894,6 +951,7 @@ class OmniVoice(PreTrainedModel):
         Returns:
             Processed numpy array of shape (1, T).
         """
+        generated_audio = _validate_generated_audio(generated_audio)
         if gen_config.postprocess_output:
             generated_audio = remove_silence(
                 generated_audio,
@@ -902,6 +960,7 @@ class OmniVoice(PreTrainedModel):
                 lead_sil=100,
                 trail_sil=100,
             )
+            generated_audio = _validate_generated_audio(generated_audio)
 
         if ref_rms is not None and ref_rms < 0.1:
             generated_audio = generated_audio * ref_rms / 0.1
@@ -916,7 +975,7 @@ class OmniVoice(PreTrainedModel):
             fade_duration=gen_config.fade_duration,
             sample_rate=self.sampling_rate,
         )
-        return generated_audio
+        return _validate_generated_audio(generated_audio)
 
     def _generate_chunked(
         self, task: GenerationTask, gen_config: OmniVoiceGenerationConfig
@@ -1051,11 +1110,40 @@ class OmniVoice(PreTrainedModel):
         if isinstance(text, str):
             text_list = [text]
         else:
-            assert isinstance(text, list), "text should be a string or a list of strings"
+            if not isinstance(text, list):
+                raise ValueError("text must be a string or a list of strings")
             text_list = text
+        if not text_list or any(
+            not isinstance(item, str) or not item.strip() for item in text_list
+        ):
+            raise ValueError("text must contain non-empty strings")
         batch_size = len(text_list)
 
         language_list = self._ensure_list(language, batch_size)
+        instruct_list = self._ensure_list(instruct, batch_size)
+        voice_clone_prompt_list = self._ensure_list(voice_clone_prompt, batch_size)
+        if any(prompt is not None for prompt in voice_clone_prompt_list) and any(
+            prompt is None for prompt in voice_clone_prompt_list
+        ):
+            raise ValueError("voice_clone_prompt must not mix prompts with None")
+        reference_pairs = None
+        if voice_clone_prompt is None and ref_audio is not None:
+            ref_text_list = self._ensure_list(ref_text, batch_size, auto_repeat=False)
+            ref_audio_list = self._ensure_list(ref_audio, batch_size, auto_repeat=False)
+            reference_count = max(len(ref_text_list), len(ref_audio_list))
+            reference_pairs = list(
+                zip(
+                    self._ensure_list(ref_audio_list, reference_count),
+                    self._ensure_list(ref_text_list, reference_count),
+                    strict=True,
+                )
+            )
+
+        user_speed = self._ensure_timing_list(speed, batch_size, "speed")
+        if user_speed is not None:
+            user_speed = [1.0 if value is None else value for value in user_speed]
+        durations = self._ensure_timing_list(duration, batch_size, "duration")
+
         language_list = [_resolve_language(lang) for lang in language_list]
 
         # Optional text normalization (opt-in). Applied to the target text only
@@ -1065,7 +1153,6 @@ class OmniVoice(PreTrainedModel):
             text_list = [
                 _normalize_text(t, lang) for t, lang in zip(text_list, language_list, strict=True)
             ]
-        instruct_list = self._ensure_list(instruct, batch_size)
         for i, s in enumerate(instruct_list):
             if s is None:
                 continue
@@ -1077,23 +1164,25 @@ class OmniVoice(PreTrainedModel):
                 "Both voice_clone_prompt and ref_text/ref_audio are provided. "
                 "ref_text/ref_audio will be ignored."
             )
-        if voice_clone_prompt is None and ref_audio is not None:
+        if reference_pairs is not None:
             # If voice_clone_prompt is not provided, create it from
             # ref_audio (ref_text will be auto-transcribed if not given).
-            ref_text_list = self._ensure_list(ref_text, batch_size, auto_repeat=False)
-            ref_audio_list = self._ensure_list(ref_audio, batch_size, auto_repeat=False)
-
-            voice_clone_prompt = []
-            for i in range(len(ref_text_list)):
-                voice_clone_prompt.append(
+            voice_clone_prompt_list = self._ensure_list(
+                [
                     self.create_voice_clone_prompt(
-                        ref_audio=ref_audio_list[i],
-                        ref_text=ref_text_list[i],
+                        ref_audio=reference_audio,
+                        ref_text=reference_text,
                         preprocess_prompt=preprocess_prompt,
                     )
-                )
-
-        voice_clone_prompt_list = self._ensure_list(voice_clone_prompt, batch_size)
+                    for reference_audio, reference_text in reference_pairs
+                ],
+                batch_size,
+            )
+        for prompt in voice_clone_prompt_list:
+            if prompt is not None:
+                if not isinstance(prompt, VoiceClonePrompt):
+                    raise ValueError("voice_clone_prompt must contain VoiceClonePrompt instances")
+                prompt.validate()
         if voice_clone_prompt_list[0] is not None:
             ref_text_list = [vc.ref_text for vc in voice_clone_prompt_list]
             ref_audio_tokens_list = [vc.ref_audio_tokens for vc in voice_clone_prompt_list]
@@ -1102,23 +1191,6 @@ class OmniVoice(PreTrainedModel):
             ref_text_list = [None] * batch_size
             ref_audio_tokens_list = [None] * batch_size
             ref_rms_list = [None] * batch_size
-
-        # Normalize speed/duration to per-item lists (may contain None).
-        if speed is not None:
-            if isinstance(speed, (int, float)):
-                user_speed = [float(speed)] * batch_size
-            else:
-                user_speed = list(speed)
-        else:
-            user_speed = None
-
-        if duration is not None:
-            if isinstance(duration, (int, float)):
-                durations = [float(duration)] * batch_size
-            else:
-                durations = list(duration)
-        else:
-            durations = None
 
         num_target_tokens_list = []
         for i in range(batch_size):
@@ -1176,10 +1248,44 @@ class OmniVoice(PreTrainedModel):
             est = est / speed
         return max(1, int(est))
 
+    def _ensure_timing_list(self, values, batch_size: int, name: str):
+        """Validate timing before reference encoding, ASR or text normalization."""
+        if values is None:
+            return None
+        message = f"{name} must contain finite positive numbers or None"
+        if isinstance(values, Real):
+            values = [values]
+        else:
+            if isinstance(values, (str, bytes, dict)):
+                raise ValueError(message)
+            try:
+                values = list(values)
+            except TypeError as exc:
+                raise ValueError(message) from exc
+        try:
+            values = self._ensure_list(values, batch_size)
+        except ValueError as exc:
+            raise ValueError(f"{name}: {exc}") from exc
+        normalized = []
+        for value in values:
+            if value is None:
+                normalized.append(None)
+                continue
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise ValueError(message)
+            try:
+                number = float(value)
+            except (OverflowError, ValueError) as exc:
+                raise ValueError(message) from exc
+            if not math.isfinite(number) or number <= 0:
+                raise ValueError(message)
+            normalized.append(number)
+        return normalized
+
     def _ensure_list(
         self, x: Union[Any, List[Any]], batch_size: int, auto_repeat: bool = True
     ) -> List[Any]:
-        x_list = x if isinstance(x, list) else [x]
+        x_list = list(x) if isinstance(x, list) else [x]
         if len(x_list) not in (
             1,
             batch_size,
@@ -1213,6 +1319,13 @@ class OmniVoice(PreTrainedModel):
 
         # Build style tokens: <|denoise|> + <|lang_start|>...<|lang_end|>
         #                      + <|instruct_start|>...<|instruct_end|>
+        if ref_audio_tokens is not None:
+            _validate_audio_tokens(
+                ref_audio_tokens,
+                num_codebooks=self.config.num_audio_codebook,
+                vocab_size=self.config.audio_vocab_size,
+                mask_id=self.config.audio_mask_id,
+            )
         style_text = ""
         if denoise and ref_audio_tokens is not None:
             style_text += "<|denoise|>"

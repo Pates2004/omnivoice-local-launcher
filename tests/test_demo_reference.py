@@ -1,5 +1,6 @@
 """Web UI and Whisper regressions without loading Gradio or neural network weights."""
 
+import argparse
 import ast
 import logging
 import unittest
@@ -27,6 +28,68 @@ def load_function(relative_path, name, namespace):
         arg.annotation = None
     exec(compile(ast.Module(body=[method], type_ignores=[]), name, "exec"), namespace)
     return namespace[name]
+
+
+class DemoStartupTests(unittest.TestCase):
+    def setUp(self):
+        self.build_parser = load_function(
+            "omnivoice/cli/demo.py", "build_parser", {"argparse": argparse}
+        )
+        self.model = Mock()
+        self.demo = Mock()
+        self.demo.queue.return_value = self.demo
+        self.model_class = Mock()
+        self.model_class.from_pretrained.return_value = self.model
+        self.build_demo = Mock(return_value=self.demo)
+        self.main = load_function(
+            "omnivoice/cli/demo.py",
+            "main",
+            {
+                "logging": Mock(),
+                "build_parser": self.build_parser,
+                "get_best_device": Mock(return_value="cpu"),
+                "get_preferred_dtype": Mock(return_value="float32"),
+                "OmniVoice": self.model_class,
+                "build_demo": self.build_demo,
+            },
+        )
+
+    def test_direct_cli_does_not_open_browser_by_default(self):
+        self.assertFalse(self.build_parser().parse_args([]).open_browser)
+        self.assertEqual(self.main(["--model", "checkpoint"]), 0)
+        self.assertFalse(self.demo.launch.call_args.kwargs["inbrowser"])
+
+    def test_browser_preference_and_server_options_reach_gradio(self):
+        self.assertEqual(
+            self.main(
+                [
+                    "--model",
+                    "checkpoint",
+                    "--device",
+                    "xpu:0",
+                    "--ip",
+                    "127.0.0.1",
+                    "--port",
+                    "7861",
+                    "--root-path",
+                    "/speech",
+                    "--open-browser",
+                    "--no-asr",
+                ]
+            ),
+            0,
+        )
+        self.build_demo.assert_called_once_with(self.model, "checkpoint")
+        self.demo.queue.assert_called_once_with()
+        self.demo.launch.assert_called_once_with(
+            server_name="127.0.0.1",
+            server_port=7861,
+            share=False,
+            root_path="/speech",
+            inbrowser=True,
+        )
+        self.assertEqual(self.model_class.from_pretrained.call_args.kwargs["device_map"], "xpu:0")
+        self.assertFalse(self.model_class.from_pretrained.call_args.kwargs["load_asr"])
 
 
 class DemoTests(unittest.TestCase):

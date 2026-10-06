@@ -39,6 +39,7 @@ dependencies = [
     "tensorboardX",
     "webdataset",
     "numpy",
+    "num2words>=0.5.14",
     "soundfile",
     "librosa",
 ]
@@ -47,7 +48,6 @@ dependencies = [
 
 tn = [
     "WeTextProcessing",   # zh/en text normalization (numbers, dates, currency)
-    "num2words",           # integer-to-words fallback for other languages
 ]
 
 eval = [

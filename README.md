@@ -14,6 +14,8 @@ start.bat
 The same entry point detects the hardware, installs the matching PyTorch
 runtime, validates it with a real tensor operation, and starts the web UI at
 `http://127.0.0.1:7860`.
+The browser opens only after that server is ready, including when a first model
+download takes several minutes. `-NoBrowser` disables automatic opening.
 
 Automatic priority is:
 
@@ -48,6 +50,34 @@ package with `Cannot import 'setuptools.build_meta'`. After updating the launche
 retry `start.bat -Mode Portable`; deleting the application or installing a global
 HIP SDK is not needed to resolve that Python build error.
 
+The launcher isolates inherited Python path/startup settings for child processes
+while preserving pip proxy, certificate, index and security policies. Pip options
+that redirect installation or choose another interpreter are rejected explicitly,
+not treated as a GPU failure. If pip requires a virtual environment, choose
+`-Mode System` with a compatible installed Python or consult the person responsible
+for that policy. Standalone portable Python is not a venv; this requirement is
+never disabled silently.
+
+After activation or relocation, generated Python wrappers such as `pip.exe` and
+ROCm's `offload-arch.exe` are repaired before accelerator validation. Their
+installation records are updated; native tools and base Python are not rewritten.
+The successful check is remembered for the runtime path and helper version, so
+unchanged starts do not rescan every installed file. This does not make a system
+venv portable between computers: it still depends on its base Python. Editable
+package hooks can also refer to the old source folder after moving the project;
+use `start.bat`, not arbitrary installed console commands from another directory.
+
+Po polsku: launcher izoluje ścieżki Pythona, ale zachowuje zasady sieciowe i
+bezpieczeństwa pip. Gdy konfiguracja pip wskazuje innego Pythona lub katalog
+instalacji, pokazuje błąd zamiast przebudowywać GPU. Jeśli pip wymaga venv, wybierz
+`-Mode System` ze zgodnym Pythonem albo uzgodnij zmianę tej zasady; portable nie
+jest venv. Po przeniesieniu środowiska naprawiane są rozpoznane pliki uruchamiające
+pakiety, w tym `pip.exe` i `offload-arch.exe`, bez zmieniania systemowego Pythona.
+Zapamiętanie wyniku pozwala pominąć pełne skanowanie przy kolejnym zwykłym starcie.
+Nie czyni to dowolnego venv przenośnym między komputerami: nadal potrzebuje on
+bazowego Pythona, a instalacja edytowalna może wskazywać dawne źródła. Uruchamiaj
+program przez `start.bat`, nie przez dowolne narzędzie z katalogu Scripts.
+
 On normal startup the launcher checks hardware, declared dependency versions,
 and a real accelerator operation. Full application imports and `pip check` run
 during installation, with `-InstallOnly`, or after installer inputs/hardware change.
@@ -63,6 +93,16 @@ Installation is transactional. A replacement is built and tested in
 `env.new/` or `venv.new/`; only a fully valid runtime replaces the active
 environment. The previous working environment is kept as `env.old/` or
 `venv.old/`.
+An orphan `.old` left by an interrupted activation remains available for recovery.
+A failed interpreter probe also permits repair/discovery of a replacement Python;
+native stderr diagnostics do not unexpectedly abort the probe.
+A per-project lock prevents another launcher from validating or replacing that
+runtime while installation or the web server is running. Close the existing
+server before starting another launcher for the same checkout.
+
+The bundled engine rejects malformed voice presets before inference and validates
+decoded audio before postprocessing, so invalid token indices or NaN/infinite
+samples cannot silently become an apparently successful result.
 
 Python/backend preferences are saved only after a successful operation; failed
 repair retains the saved working choice. Paths containing spaces, exclamation
@@ -140,6 +180,17 @@ start.bat -SelfTest
 
 The web launcher uses Gradio. wxPython belongs to the separate OmniSonic
 desktop application and is not installed here.
+
+The bundled engine's opt-in `generate(normalize_text=True, language="pl")`
+supports lightweight standalone-integer normalization through `num2words`,
+including Polish and English. Basic conversion preserves compound numeric forms
+and inline voice/pronunciation tags; it is not a full grammar-aware normalizer.
+Unsupported languages or missing converters now report an error instead of
+silently leaving numbers unchanged. Optional richer WeText normalization for
+English/Chinese is retained when its native dependencies are already available;
+the launcher does not automatically install that native stack on Windows.
+For the Python API, omitted language retains the upstream English/Chinese
+heuristic: supply an explicit language for other input text.
 
 ## Launcher regression tests
 

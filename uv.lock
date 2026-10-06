@@ -1577,6 +1577,7 @@ dependencies = [
     { name = "accelerate" },
     { name = "gradio" },
     { name = "librosa" },
+    { name = "num2words" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pydub" },
@@ -1601,7 +1602,6 @@ lora = [
     { name = "peft" },
 ]
 tn = [
-    { name = "num2words" },
     { name = "wetextprocessing" },
 ]
 
@@ -1612,7 +1612,7 @@ requires-dist = [
     { name = "gradio" },
     { name = "jiwer", marker = "extra == 'eval'", specifier = "==3.1.0" },
     { name = "librosa" },
-    { name = "num2words", marker = "extra == 'tn'" },
+    { name = "num2words", specifier = ">=0.5.14" },
     { name = "numpy" },
     { name = "peft", marker = "extra == 'lora'", specifier = ">=0.20.0" },
     { name = "pydub" },

@@ -4,6 +4,12 @@ title OmniVoice Local Launcher
 color 0b
 
 cd /d "%~dp0"
+if errorlevel 1 (
+    echo [ERROR] Cannot access the program folder. Move the launcher to an accessible local folder.
+    echo [ERROR] Nie mozna otworzyc folderu programu. Przenies launcher do dostepnego folderu lokalnego.
+    pause
+    exit /b 1
+)
 
 if not exist "launcher.ps1" (
     echo [ERROR] Missing launcher.ps1.

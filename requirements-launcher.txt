@@ -8,6 +8,7 @@ gradio
 tensorboardX
 webdataset
 numpy
+num2words>=0.5.14
 soundfile
 librosa
 hatchling

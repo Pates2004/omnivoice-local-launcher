@@ -280,13 +280,14 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         payload = {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
         if args.json:
-            print(json.dumps(payload, ensure_ascii=False))
+            # PowerShell 5.1 decodes native stdout using a legacy code page.
+            print(json.dumps(payload, ensure_ascii=True))
         else:
             print(payload["error"], file=sys.stderr)
         return 1
 
     if args.json:
-        print(json.dumps(payload, ensure_ascii=False))
+        print(json.dumps(payload, ensure_ascii=True))
     else:
         print(format_diagnostics())
     return 0

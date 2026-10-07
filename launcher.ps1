@@ -591,13 +591,28 @@ function Install-PortablePythonAt {
     # isolated build environments (including the ROCm source distribution).
     $unpack = Join-Path $WorkDir ("python-unpack-" + [Guid]::NewGuid().ToString("N"))
     Assert-ProjectChildPath $unpack | Out-Null
-    Expand-Archive -LiteralPath $archive -DestinationPath $unpack
-    $toolsRoot = Join-Path $unpack "tools"
-    if (-not (Test-Path -LiteralPath (Join-Path $toolsRoot "python.exe"))) {
-        throw "The CPython package does not contain tools/python.exe."
+    $extractionError = $null
+    try {
+        Expand-Archive -LiteralPath $archive -DestinationPath $unpack
+        $toolsRoot = Join-Path $unpack "tools"
+        if (-not (Test-Path -LiteralPath (Join-Path $toolsRoot "python.exe"))) {
+            throw "The CPython package does not contain tools/python.exe."
+        }
+        Move-Item -LiteralPath $toolsRoot -Destination $TargetRoot
     }
-    Move-Item -LiteralPath $toolsRoot -Destination $TargetRoot
-    Remove-LauncherDirectory $unpack
+    catch {
+        $extractionError = $_
+        throw
+    }
+    finally {
+        try { Remove-LauncherDirectory $unpack }
+        catch {
+            if ($null -ne $extractionError) {
+                throw "Portable Python preparation failed: $($extractionError.Exception.Message) Cleanup also failed: $($_.Exception.Message) Temporary extraction files remain at $unpack. / Nie udalo sie przygotowac Pythona ani usunac plikow tymczasowych; szczegoly i ich katalog podano powyzej."
+            }
+            throw
+        }
+    }
     $python = Get-EnvironmentPython "Portable" $TargetRoot
     if (-not (Test-CompatiblePython $python)) { throw "Portable Python is not compatible." }
     Invoke-Checked -FilePath $python -Arguments @(

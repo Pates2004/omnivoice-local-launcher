@@ -112,4 +112,74 @@ foreach ($transaction in @('Runtime', 'Bootstrap')) {
         }
     }
 }
-Write-Host 'Launcher recovery tests: OK (native stderr, replacement Python, orphan backups and rollback failures)'
+foreach ($scenario in @('interrupted-download', 'bad-checksum', 'extraction-failure', 'extraction-and-cleanup-failure', 'cleanup-failure', 'success')) {
+    & {
+        # All mutations are in-memory mocks; no archive/runtime is downloaded.
+        $WorkDir = Join-Path $testProject 'trash\virtual-bootstrap-errors'
+        $targetRoot = Join-Path $WorkDir 'env.new'
+        $archive = Join-Path $WorkDir "python-$PythonVersion-nuget-amd64.zip"
+        $state = @{ download = 0; extract = 0; promote = 0; cleanup = 0; pip = 0; unpack = '' }
+        function New-Item {}
+        function Test-Path {
+            param([string]$LiteralPath)
+            if ($LiteralPath -eq $targetRoot) { return $false }
+            if ($LiteralPath -eq $archive) {
+                return $scenario -notin @('interrupted-download', 'bad-checksum')
+            }
+            return $true
+        }
+        function Get-FileHash {
+            return [pscustomobject]@{ Hash = $(if ($scenario -eq 'bad-checksum') { 'bad' } else { $PythonArchiveSha256 }) }
+        }
+        function Invoke-WebRequest {
+            $state.download++
+            if ($scenario -eq 'interrupted-download') { throw 'BOOTSTRAP_DOWNLOAD_INTERRUPTED' }
+        }
+        function Expand-Archive {
+            param($LiteralPath, $DestinationPath)
+            $state.extract++
+            $state.unpack = $DestinationPath
+            if ($scenario -like 'extraction*') { throw 'BOOTSTRAP_EXTRACTION_FAILED' }
+        }
+        function Move-Item { $state.promote++ }
+        function Remove-LauncherDirectory {
+            $state.cleanup++
+            if ($scenario -like '*cleanup-failure') { throw 'BOOTSTRAP_CLEANUP_FAILED' }
+        }
+        function Test-CompatiblePython { return $true }
+        function Invoke-Checked { $state.pip++ }
+        $failure = $null
+        $result = @()
+        try { $result = @(Install-PortablePythonAt $targetRoot) }
+        catch { $failure = $_.Exception.Message }
+        switch ($scenario) {
+            'interrupted-download' {
+                Assert-RecoveryTest ($failure -match 'BOOTSTRAP_DOWNLOAD_INTERRUPTED') 'Interrupted download remains the cause'
+                Assert-RecoveryTest ($state.extract -eq 0 -and $state.promote -eq 0) 'Interrupted download is never extracted or promoted'
+            }
+            'bad-checksum' {
+                Assert-RecoveryTest ($failure -match 'checksum mismatch') 'Invalid archive checksum aborts bootstrap'
+                Assert-RecoveryTest ($state.extract -eq 0 -and $state.promote -eq 0) 'Invalid archive never reaches extraction'
+            }
+            'extraction-failure' {
+                Assert-RecoveryTest ($failure -match 'BOOTSTRAP_EXTRACTION_FAILED') 'Extraction failure remains the cause'
+                Assert-RecoveryTest ($state.cleanup -eq 1 -and $state.promote -eq 0) 'Failed extraction is cleaned but never promoted'
+            }
+            'extraction-and-cleanup-failure' {
+                Assert-RecoveryTest ($failure -match 'BOOTSTRAP_EXTRACTION_FAILED') 'Cleanup failure does not hide the extraction error'
+                Assert-RecoveryTest ($failure -match 'BOOTSTRAP_CLEANUP_FAILED') 'Combined error includes cleanup cause'
+                Assert-RecoveryTest ($failure -match [Regex]::Escape($state.unpack)) 'Combined error identifies retained extraction files'
+            }
+            'cleanup-failure' {
+                Assert-RecoveryTest ($failure -match 'BOOTSTRAP_CLEANUP_FAILED') 'Cleanup failure is not reported as successful bootstrap'
+            }
+            'success' {
+                Assert-RecoveryTest (-not $failure) 'Bootstrap succeeds after validation'
+                Assert-RecoveryTest ($result.Count -eq 1 -and $result[0] -eq (Join-Path $targetRoot 'python.exe')) 'Only the interpreter path reaches the success pipeline'
+                Assert-RecoveryTest ($state.download -eq 0 -and $state.promote -eq 1 -and $state.pip -eq 1) 'Validated cached archive is reused and prepared once'
+            }
+        }
+        if ($scenario -ne 'success') { Assert-RecoveryTest ($state.pip -eq 0) 'Failed preparation does not run pip' }
+    }
+}
+Write-Host 'Launcher recovery tests: OK (native stderr, Python replacement, rollback and bootstrap failures)'

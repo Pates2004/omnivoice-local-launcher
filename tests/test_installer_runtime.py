@@ -369,6 +369,42 @@ class RuntimeRepairTests(unittest.TestCase):
             runtime.repair_runtime(self.root)
         self.assertEqual(self.contents(), before)
 
+    def test_supported_cpython_activation_layouts_are_rebased(self):
+        # CPython 3.10.11/3.11.9 use a single double-quoted assignment;
+        # 3.13.0 uses two double-quoted branches, newer builds single quotes.
+        self.add_activation()
+        path = self.scripts / "activate"
+        for layout in (
+            'VIRTUAL_ENV="C:/old/venv.new"\nexport VIRTUAL_ENV\n',
+            '        VIRTUAL_ENV=$(cygpath "C:/old/venv.new")\n'
+            '        export VIRTUAL_ENV="C:/old/venv.new"\n',
+        ):
+            with self.subTest(layout=layout):
+                path.write_bytes(("_OLD_VIRTUAL_PATH=\n" + layout).encode("utf-8"))
+                config = (self.root / "pyvenv.cfg").read_bytes()
+                result = runtime.repair_runtime(self.root)
+                self.assertIn(str(path.relative_to(self.root)), result["changed_files"])
+                self.assertNotIn(b"venv.new", path.read_bytes())
+                self.assertEqual((self.root / "pyvenv.cfg").read_bytes(), config)
+                self.assertEqual(runtime.repair_runtime(self.root)["changed_files"], [])
+
+    def test_incomplete_or_mixed_activation_layout_is_preserved(self):
+        self.add_activation()
+        path = self.scripts / "activate"
+        for layout in (
+            'VIRTUAL_ENV="C:/old/venv.new"\n',
+            'export VIRTUAL_ENV="C:/old/venv.new"\n',
+            'VIRTUAL_ENV="C:/old/venv.new"\nexport VIRTUAL_ENV\n'
+            '        export VIRTUAL_ENV="C:/old/venv.new"\n',
+            '        VIRTUAL_ENV=$(cygpath "C:/one")\n        export VIRTUAL_ENV="C:/two"\n',
+        ):
+            with self.subTest(layout=layout):
+                path.write_bytes(("_OLD_VIRTUAL_PATH=\n" + layout).encode("utf-8"))
+                before = self.contents()
+                with self.assertRaisesRegex(runtime.RuntimeRepairError, "Unknown activation"):
+                    runtime.repair_runtime(self.root)
+                self.assertEqual(self.contents(), before)
+
     def test_failure_rolls_back_scripts_and_records(self):
         self.add_launcher("one.exe")
         self.add_launcher("two.exe")

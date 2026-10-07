@@ -241,18 +241,30 @@ def _activation_changes(root: Path) -> list[Change]:
             match = matches[0]
             after_text = text[: match.start()] + dynamic + match.group(2) + text[match.end() :]
         else:
-            # Only the two generated root assignments are changed, not arbitrary
-            # appearances of a path in custom shell code or pyvenv.cfg.
+            # CPython changed both the layout and quoting of this script across
+            # supported releases. Rebase only its known generated assignments,
+            # not arbitrary path appearances in custom code or pyvenv.cfg.
             escaped_apostrophe = "'" + chr(34) + "'" + chr(34) + "'"
             value = "'" + str(root).replace("'", escaped_apostrophe) + "'"
-            literal = r"'(?:[^'\r\n]|" + re.escape(escaped_apostrophe) + r")*'"
+            single_literal = r"'(?:[^'\r\n]|" + re.escape(escaped_apostrophe) + r")*'"
+            literal = "(?:" + single_literal + r'|"[^"\r\n]+")'
             pattern = (
-                r"(?m)^(\s*(?:export VIRTUAL_ENV=|VIRTUAL_ENV=\$\(cygpath ))("
+                r"(?m)^([ \t]*(?:export VIRTUAL_ENV=|VIRTUAL_ENV=\$\(cygpath |VIRTUAL_ENV=))("
                 + literal
                 + r")(\)?)[ \t]*\r?$"
             )
             matches = list(re.finditer(pattern, text))
-            if len(matches) != 2 or len({match.group(2) for match in matches}) != 1:
+            assignments = {(match.group(1).lstrip(), match.group(3)) for match in matches}
+            legacy = (
+                len(matches) == 1
+                and assignments == {("VIRTUAL_ENV=", "")}
+                and re.search(r"(?m)^export VIRTUAL_ENV\r?$", text) is not None
+            )
+            modern = len(matches) == 2 and assignments == {
+                ("VIRTUAL_ENV=$(cygpath ", ")"),
+                ("export VIRTUAL_ENV=", ""),
+            }
+            if not (legacy or modern) or len({match.group(2) for match in matches}) != 1:
                 raise RuntimeRepairError(f"Unknown activation environment assignments: {path}")
             after_text = re.sub(
                 pattern,

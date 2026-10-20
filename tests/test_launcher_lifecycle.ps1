@@ -255,4 +255,7 @@ try {
 } catch { $failures.Add($_.Exception.Message) }
 
 if ($failures.Count -gt 0) { throw ($failures -join [Environment]::NewLine) }
+# Hosted PowerShell exits with LASTEXITCODE. Expected failing native probes in
+# this regression must not leak their status after every assertion succeeded.
+$global:LASTEXITCODE = 0
 Write-Host 'Launcher lifecycle tests: OK (managed timeout, mode, activation rollback and external-use guard)'

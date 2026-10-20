@@ -354,4 +354,7 @@ else { & (Join-Path $PSScriptRoot 'test_python_isolation.ps1') }
 & (Join-Path $PSScriptRoot 'test_launcher_paths.ps1')
 & (Join-Path $PSScriptRoot 'test_probe_process.ps1')
 & (Join-Path $PSScriptRoot 'test_launcher_lifecycle.ps1')
+& (Join-Path $PSScriptRoot 'test_launcher_status.ps1')
+# Set success only after all suites returned without an assertion failure.
+$global:LASTEXITCODE = 0
 Write-Host "Launcher regression tests: OK"

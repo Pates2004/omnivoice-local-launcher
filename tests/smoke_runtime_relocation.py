@@ -11,11 +11,24 @@ import argparse
 import base64
 import csv
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
 import uuid
 from pathlib import Path
+
+if __package__:
+    from .materials import material_directory
+else:
+    # Isolated portable Python can omit the script directory from sys.path.
+    # Load only this sibling helper, preserving the runtime's import isolation.
+    specification = importlib.util.spec_from_file_location(
+        "relocation_test_materials", Path(__file__).with_name("materials.py")
+    )
+    helper = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(helper)
+    material_directory = helper.material_directory
 
 
 def _hash(data: bytes) -> str:
@@ -28,7 +41,10 @@ def main() -> int:
     args = parser.parse_args()
     project = Path(__file__).resolve().parents[1]
     root = args.root.resolve(strict=True)
-    if not root.is_relative_to(project / "trash") or root != Path(sys.prefix).resolve():
+    if (
+        not root.is_relative_to(material_directory("Trash", project).resolve())
+        or root != Path(sys.prefix).resolve()
+    ):
         raise RuntimeError(
             "This smoke test requires an explicitly selected disposable Python under trash."
         )

@@ -8,12 +8,13 @@ import json
 import stat
 import struct
 import sys
-import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
+
+from tests.materials import scratch_directory
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -65,9 +66,7 @@ def launcher_bytes(old_python, *, gui=False, variant="modern", body=None):
 
 class RuntimeRepairTests(unittest.TestCase):
     def setUp(self):
-        trash = PROJECT_ROOT / "trash"
-        trash.mkdir(exist_ok=True)
-        self.scratch = Path(tempfile.mkdtemp(prefix="runtime-relocation-", dir=trash))
+        self.scratch = scratch_directory("runtime-relocation-")
         self.root = self.scratch / "runtime żółć ' space#!"
         self.scripts = self.root / "Scripts"
         self.site = self.root / "Lib" / "site-packages"

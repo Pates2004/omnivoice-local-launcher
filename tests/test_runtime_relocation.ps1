@@ -1,8 +1,17 @@
+. (Join-Path $PSScriptRoot '..\project_materials.ps1')
+
 $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
 $launcher = Join-Path $project 'desktop_launcher.ps1'
 if (-not (Test-Path -LiteralPath $launcher)) { $launcher = Join-Path $project 'launcher.ps1' }
 . $launcher
+
+# Restrict real fixture operations to this checkout and its central test areas.
+$materialTestProject = Split-Path -Parent $PSScriptRoot
+function Assert-ProjectChildPath {
+    param([string]$Path)
+    return Assert-ProjectTestPath $Path $materialTestProject
+}
 
 function Assert-RelocationTest {
     param([bool]$Condition, [string]$Message)
@@ -10,7 +19,7 @@ function Assert-RelocationTest {
 }
 
 & {
-    $root = Join-Path $project 'trash\virtual-relocation-runtime'
+    $root = Join-ProjectMaterialPath $project 'trash\virtual-relocation-runtime'
     $events = New-Object 'System.Collections.Generic.List[string]'
     $needsRepair = $false
     $busy = $false

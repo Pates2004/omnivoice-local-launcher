@@ -1,14 +1,23 @@
+. (Join-Path $PSScriptRoot '..\project_materials.ps1')
+
 $ErrorActionPreference = 'Stop'
 $testProject = Split-Path -Parent $PSScriptRoot
 $launcherPath = Join-Path $testProject 'desktop_launcher.ps1'
 if (-not (Test-Path -LiteralPath $launcherPath)) { $launcherPath = Join-Path $testProject 'launcher.ps1' }
 . $launcherPath
+
+# Restrict real fixture operations to this checkout and its central test areas.
+$materialTestProject = Split-Path -Parent $PSScriptRoot
+function Assert-ProjectChildPath {
+    param([string]$Path)
+    return Assert-ProjectTestPath $Path $materialTestProject
+}
 function Assert-RecoveryTest {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw "Recovery regression failed: $Message" }
 }
 & {
-    $scratch = Join-Path $testProject ('trash\native-probe-' + [Guid]::NewGuid().ToString('N'))
+    $scratch = Join-ProjectMaterialPath $testProject ('trash\native-probe-' + [Guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($scratch) | Out-Null
     $probePath = Join-Path $scratch 'python-probe.cmd'
     [IO.File]::WriteAllText($probePath,
@@ -35,7 +44,7 @@ foreach ($transaction in @('Runtime', 'Bootstrap')) {
     foreach ($scenario in @('orphan-failure', 'orphan-success', 'first-failure', 'existing-failure', 'restore-failure', 'cleanup-failure')) {
         if ($transaction -eq 'Bootstrap' -and $scenario -eq 'cleanup-failure') { continue }
         & {
-            $runtimeRoot = Join-Path $testProject ('trash\virtual-recovery-' + [Guid]::NewGuid().ToString('N'))
+            $runtimeRoot = Join-ProjectMaterialPath $testProject ('trash\virtual-recovery-' + [Guid]::NewGuid().ToString('N'))
             $backupRoot = "$runtimeRoot.old"
             $paths = @{}
             if ($scenario -eq 'existing-failure') {
@@ -115,7 +124,7 @@ foreach ($transaction in @('Runtime', 'Bootstrap')) {
 foreach ($scenario in @('interrupted-download', 'bad-checksum', 'extraction-failure', 'extraction-and-cleanup-failure', 'cleanup-failure', 'success')) {
     & {
         # All mutations are in-memory mocks; no archive/runtime is downloaded.
-        $WorkDir = Join-Path $testProject 'trash\virtual-bootstrap-errors'
+        $WorkDir = Join-ProjectMaterialPath $testProject 'trash\virtual-bootstrap-errors'
         $targetRoot = Join-Path $WorkDir 'env.new'
         $archive = Join-Path $WorkDir "python-$PythonVersion-nuget-amd64.zip"
         $state = @{ download = 0; extract = 0; promote = 0; cleanup = 0; pip = 0; unpack = '' }

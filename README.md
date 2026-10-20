@@ -197,14 +197,20 @@ heuristic: supply an explicit language for other input text.
 Run `powershell -File tests/test_launcher.ps1` for startup logic tests. Add
 `-Portable` to download portable Python, build the small ROCm source package,
 and verify pip after environment activation/renaming. No GPU or global HIP SDK
-is needed for that package-build test. Diagnostic artifacts remain in `trash/`.
+is needed for that package-build test. Disposable fixtures go to
+`D:\work\Trash\<checkout-directory-name>`; useful diagnostics belong to
+`D:\work\Workspace\<checkout-directory-name>`. C: is used only when D: does not
+exist. Access errors remain visible. Linux test fixtures use the system temporary
+directory. The application runtime and user data remain beside the launcher.
 
 `tests/test_demo_reference.py` checks web clone options, errors, PCM clipping and
 long-reference transcription without loading model weights. For an optional
 real-device regression using cached OmniVoice/Whisper models:
 
 ```powershell
-env\python.exe -B tests/smoke_web_inference.py --backend rocm --reference long-test.wav --output Workspace/web-smoke
+. .\project_materials.ps1
+$testOutput = Join-ProjectMaterialPath (Get-Location).Path 'Workspace\web-smoke'
+env\python.exe -B tests/smoke_web_inference.py --backend rocm --reference long-test.wav --output $testOutput
 ```
 
 Use a reference longer than 30 seconds and a new output directory for each run.

@@ -1,8 +1,17 @@
+. (Join-Path $PSScriptRoot '..\project_materials.ps1')
+
 $ErrorActionPreference = 'Stop'
 $testProject = Split-Path -Parent $PSScriptRoot
 $launcherPath = Join-Path $testProject 'desktop_launcher.ps1'
 if (-not (Test-Path -LiteralPath $launcherPath)) { $launcherPath = Join-Path $testProject 'launcher.ps1' }
 . $launcherPath
+
+# Restrict real fixture operations to this checkout and its central test areas.
+$materialTestProject = Split-Path -Parent $PSScriptRoot
+function Assert-ProjectChildPath {
+    param([string]$Path)
+    return Assert-ProjectTestPath $Path $materialTestProject
+}
 
 function Assert-DiscoveryTest {
     param([bool]$Condition, [string]$Message)
@@ -12,7 +21,7 @@ function Assert-DiscoveryTest {
 $profile = Get-BackendProfile (Get-BackendMatrix) 'cpu'
 $realPython = Find-SystemPython $profile
 Assert-DiscoveryTest ([bool]$realPython) 'A real compatible interpreter is available for the test'
-$scratch = Join-Path $testProject ('trash\python-discovery-' + [Guid]::NewGuid().ToString('N'))
+$scratch = Join-ProjectMaterialPath $testProject ('trash\python-discovery-' + [Guid]::NewGuid().ToString('N'))
 Assert-ProjectChildPath $scratch | Out-Null
 [IO.Directory]::CreateDirectory($scratch) | Out-Null
 $missingPython = Join-Path $scratch 'missing-python.cmd'

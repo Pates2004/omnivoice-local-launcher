@@ -1,11 +1,20 @@
 [CmdletBinding()]
 param([string]$Python = '')
 
+. (Join-Path $PSScriptRoot '..\project_materials.ps1')
+
 $ErrorActionPreference = 'Stop'
 $testProject = Split-Path -Parent $PSScriptRoot
 $launcherPath = Join-Path $testProject 'desktop_launcher.ps1'
 if (-not (Test-Path -LiteralPath $launcherPath)) { $launcherPath = Join-Path $testProject 'launcher.ps1' }
 . $launcherPath
+
+# Restrict real fixture operations to this checkout and its central test areas.
+$materialTestProject = Split-Path -Parent $PSScriptRoot
+function Assert-ProjectChildPath {
+    param([string]$Path)
+    return Assert-ProjectTestPath $Path $materialTestProject
+}
 
 function Assert-IsolationTest {
     param([bool]$Condition, [string]$Message)
@@ -14,7 +23,7 @@ function Assert-IsolationTest {
 
 if (-not $Python) { $Python = Find-SystemPython (Get-BackendProfile (Get-BackendMatrix) 'cpu') }
 Assert-IsolationTest (Test-Path -LiteralPath $Python) 'A test interpreter is available'
-$scratch = Join-Path $testProject ('trash\python-isolation-' + [Guid]::NewGuid().ToString('N'))
+$scratch = Join-ProjectMaterialPath $testProject ('trash\python-isolation-' + [Guid]::NewGuid().ToString('N'))
 Assert-ProjectChildPath $scratch | Out-Null
 [IO.Directory]::CreateDirectory($scratch) | Out-Null
 $poisonPath = Join-Path $scratch 'foreign-modules'

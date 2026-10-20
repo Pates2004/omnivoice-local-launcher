@@ -1,9 +1,11 @@
+. (Join-Path $PSScriptRoot '..\project_materials.ps1')
+
 $ErrorActionPreference = 'Stop'
 $project = Split-Path -Parent $PSScriptRoot
 $isDesktop = Test-Path -LiteralPath (Join-Path $project 'desktop_launcher.ps1')
 $batchName = if ($isDesktop) { 'start_desktop.bat' } else { 'start.bat' }
 $launcherName = if ($isDesktop) { 'desktop_launcher.ps1' } else { 'launcher.ps1' }
-$scratch = Join-Path $project ('trash\batch-path-tests-' + [Guid]::NewGuid().ToString('N'))
+$scratch = Join-ProjectMaterialPath $project ('trash\batch-path-tests-' + [Guid]::NewGuid().ToString('N'))
 $originalDirectory = (Get-Location).Path
 $originalLiteralVariable = $env:OMNISONIC_LITERAL_PATH_TEST
 $stub = @'

@@ -19,6 +19,7 @@ function Assert-RecoveryTest {
 & {
     $scratch = Join-ProjectMaterialPath $testProject ('trash\native-probe-' + [Guid]::NewGuid().ToString('N'))
     [IO.Directory]::CreateDirectory($scratch) | Out-Null
+    $WorkDir = Join-Path $scratch '.launcher'
     $probePath = Join-Path $scratch 'python-probe.cmd'
     [IO.File]::WriteAllText($probePath,
         "@echo off`r`necho Native compatibility diagnostic 1>&2`r`nexit /b %OMNISONIC_TEST_PROBE_EXIT%`r`n")

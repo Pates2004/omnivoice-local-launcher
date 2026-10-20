@@ -177,6 +177,25 @@ class DemoTests(unittest.TestCase):
 
 
 class WhisperInputTests(unittest.TestCase):
+    def test_unload_releases_the_loaded_pipeline_device_after_explicit_override(self):
+        for configured, actual in (("cpu", "cuda:1"), ("cuda:0", "cpu"), ("cpu", "xpu:1")):
+            with self.subTest(configured=configured, actual=actual):
+                holder = SimpleNamespace(
+                    _asr_pipe=SimpleNamespace(device=actual),
+                    _asr_device=configured,
+                    device="cuda:0",
+                )
+                release = Mock(
+                    side_effect=lambda *args, holder=holder: self.assertIsNone(holder._asr_pipe)
+                )
+                unload = load_function(
+                    "omnivoice/models/omnivoice.py",
+                    "unload_asr_model",
+                    {"release_memory": release, "torch": "torch"},
+                )
+                unload(holder)
+                release.assert_called_once_with(actual, "torch")
+
     def setUp(self):
         self.pipe = Mock(return_value={"text": " full transcript "})
         self.holder = SimpleNamespace(_asr_pipe=self.pipe)

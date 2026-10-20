@@ -19,11 +19,12 @@ function Assert-DiscoveryTest {
 }
 
 $profile = Get-BackendProfile (Get-BackendMatrix) 'cpu'
-$realPython = Find-SystemPython $profile
-Assert-DiscoveryTest ([bool]$realPython) 'A real compatible interpreter is available for the test'
 $scratch = Join-ProjectMaterialPath $testProject ('trash\python-discovery-' + [Guid]::NewGuid().ToString('N'))
 Assert-ProjectChildPath $scratch | Out-Null
 [IO.Directory]::CreateDirectory($scratch) | Out-Null
+$WorkDir = Join-Path $scratch '.launcher'
+$realPython = Find-SystemPython $profile
+Assert-DiscoveryTest ([bool]$realPython) 'A real compatible interpreter is available for the test'
 $missingPython = Join-Path $scratch 'missing-python.cmd'
 $noisyLauncher = Join-Path $scratch 'noisy-py.cmd'
 $unicodeLauncher = Join-Path $scratch 'unicode-py.cmd'

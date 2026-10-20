@@ -35,7 +35,7 @@ audio = model.generate(text="Hello world", generation_config=config)
 These accept a single value applied to all items, or a per-item list (useful in batch mode):
 
 ```python
-# Fixed 10-second output
+# Request a 10-second conditioning budget
 audio = model.generate(text="Hello, this is a test of duration control", duration=10.0)
 
 # Faster speech (1.2x faster than estimated)
@@ -44,12 +44,25 @@ audio = model.generate(text="Hello, this is a test of duration control", speed=1
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `duration` | float or list[float \| None] | None | Fixed output duration in seconds. Overrides `speed` when set. |
+| `duration` | float or list[float \| None] | None | Requested duration in seconds, quantized to codec frames. Overrides `speed` when set. |
 | `speed` | float or list[float \| None] | None | Speed factor. Values > 1.0 produce shorter audio (faster); values < 1.0 produce longer audio (slower). Ignored when `duration` is set. Defaults to 1.0 when both are None. |
 
 Priority: `duration` > `speed`.
 
-> **Note:** When using `duration`, the default post-processing step may trim trailing silence, causing the actual output to be slightly shorter than the requested duration. If you need the output duration to **exactly** match the specified value, set `postprocess_output=False` to disable silence removal.
+The duration budget is shared across all long-form chunks; it is not applied
+again to each chunk. Final waveform length can still differ because of codec
+quantization, interchunk silence, edge padding, and optional silence removal.
+`postprocess_output=False` disables silence removal, but does not disable chunk
+joins or padding. For an unchunked, unpadded result, also set
+`audio_chunk_duration=0` and `pad_duration=0`. No speech is cropped or stretched
+to enforce a duration. A chunked request too short to allocate at least one codec
+frame per chunk raises an error; increase duration or chunk size instead.
+
+Po polsku: zadany czas jest wspólnym budżetem wszystkich fragmentów, nie czasem
+każdego z nich osobno. Przerwy między fragmentami, marginesy ciszy, zaokrąglenie
+do ramek kodeka i usuwanie ciszy mogą zmienić długość końcowego pliku. Samo
+wyłączenie przetwarzania końcowego nie gwarantuje dokładnej długości. Program
+nie ucina ani nie rozciąga wypowiedzi, aby wymusić zadany czas.
 
 ## Pre/Post Processing
 
@@ -62,7 +75,13 @@ Priority: `duration` > `speed`.
 
 ## Long-Form Generation
 
-To support stable long-form speech generation with low VRAM consumption, the text is automatically split into smaller segments when the estimated duration of the generated speech exceeds `audio_chunk_duration`, with each segment producing approximately `audio_chunk_duration` seconds of audio. This approach allows the model to accept arbitrarily long text and generate arbitrarily long speech with near-constant VRAM consumption.
+When estimated duration exceeds `audio_chunk_threshold`, text is split into
+segments targeting `audio_chunk_duration`. Punctuation is preferred, with word
+boundaries and a bounded fallback for long words or unpunctuated text. Bracketed
+pronunciation/control spans stay intact and may exceed the soft text limit.
+Chunking bounds per-call model memory; the complete output still needs host
+memory. For automatic/designed voices, the first generated chunk conditions later
+chunks without applying speaking speed a second time.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|

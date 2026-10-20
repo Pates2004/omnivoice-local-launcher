@@ -84,6 +84,19 @@ during installation, with `-InstallOnly`, or after installer inputs/hardware cha
 An outdated marker is refreshed if the existing runtime passes validation, without
 rebuilding a working environment. Application and model loading still take time.
 
+Read-only Python discovery has a 10-second deadline per candidate; runtime
+checks have a 300-second deadline. Adjust them with `-DiscoveryTimeoutSeconds`
+and `-ProbeTimeoutSeconds` when needed. A timed-out check stops only its owned
+process tree, reports its phase and diagnostic logs, and does not automatically
+reinstall packages or silently switch to CPU. These deadlines do not interrupt
+package installation, downloads, or actual speech generation.
+
+Po polsku: wykrywanie Pythona ma limit 10 sekund na kandydata, a kontrole
+środowiska 300 sekund. Opcje `-DiscoveryTimeoutSeconds` i `-ProbeTimeoutSeconds`
+pozwalają je zmienić. Przekroczenie limitu kończy tylko procesy danej kontroli,
+z podaniem etapu i logów. Nie uruchamia automatycznie reinstalacji ani CPU.
+Limity nie dotyczą pobierania, instalacji pakietów ani generowania mowy.
+
 AMD ROCm is a supported profile, subject to the GPU/Windows/driver requirements
 in the backend matrix. The required ROCm SDK Python packages are installed inside
 the selected environment. A compatible AMD graphics driver is still required;
@@ -216,8 +229,8 @@ env\python.exe -B tests/smoke_web_inference.py --backend rocm --reference long-t
 Use a reference longer than 30 seconds and a new output directory for each run.
 With system-Python mode use `venv\Scripts\python.exe` instead. The test checks the
 actual web callbacks for cloning/design and verifies their shared GPU queue.
-For a synthetic or repetitive reference, pass `--reference-text` with the
-transcript of its first eight seconds; otherwise the test checks on-demand ASR.
+The test checks on-demand ASR for the synthetic reference; it does not accept
+a separate transcript argument.
 
 ## Credits
 

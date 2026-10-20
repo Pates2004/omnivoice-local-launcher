@@ -28,6 +28,7 @@ Provides:
 import importlib.util
 import logging
 import re
+from numbers import Integral
 from typing import Callable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -123,23 +124,59 @@ ABBREVIATIONS = {
 }
 
 
+def _split_long_sentence(sentence: str, chunk_len: int) -> List[str]:
+    """Prefer word boundaries; keep bracketed control/pronunciation spans whole."""
+    if len(sentence) <= chunk_len:
+        return [sentence]
+    chunks = []
+    current = ""
+    for unit in re.findall(r"\[[^\[\]]*\]|\s+|[^\s\[\]]+|.", sentence, flags=re.DOTALL):
+        if len(current) + len(unit) <= chunk_len:
+            current += unit
+            continue
+        if current.strip():
+            chunks.append(current)
+        current = ""
+        if len(unit) <= chunk_len:
+            current = unit
+        elif unit.startswith("[") and unit.endswith("]"):
+            # An indivisible pronunciation span may exceed the soft limit.
+            chunks.append(unit)
+        else:
+            # CJK or one unusually long word has no usable whitespace boundary.
+            # Keep whitespace blocks too: dropping them here could later merge
+            # adjacent words while small pieces are regrouped below.
+            chunks.extend(
+                unit[start : start + chunk_len] for start in range(0, len(unit), chunk_len)
+            )
+    if current.strip():
+        chunks.append(current)
+    return chunks
+
+
 def chunk_text_punctuation(
     text: str,
     chunk_len: int,
     min_chunk_len: Optional[int] = None,
 ) -> List[str]:
     """
-    Splits the input tokens list into chunks according to punctuations,
-    avoiding splits on common abbreviations (e.g., Mr., No.).
+    Split at punctuation, falling back to words for oversized sentences.
+
+    ``chunk_len`` is a positive character limit. A bracketed control or
+    pronunciation span is never split, even when that span exceeds the limit.
+    Tiny chunks are merged only when the result still fits the limit.
     """
+    if isinstance(chunk_len, bool) or not isinstance(chunk_len, Integral) or chunk_len <= 0:
+        raise ValueError("chunk_len must be a positive integer")
 
     # 1. Split the tokens according to punctuations.
     sentences = []
     current_sentence = []
 
-    tokens_list = list(text)
+    tokens_list = re.finditer(r"\[[^\[\]]*\]|.", text, flags=re.DOTALL)
 
-    for token in tokens_list:
+    for match in tokens_list:
+        token = match.group()
         # If the first token of current sentence is punctuation,
         # append it to the end of the previous sentence.
         if (
@@ -160,8 +197,11 @@ def chunk_text_punctuation(
                     temp_str = "".join(current_sentence).strip()
                     if temp_str:
                         last_word = temp_str.split()[-1]
-                        if last_word in ABBREVIATIONS:
-                            is_abbreviation = True
+                        is_abbreviation = any(
+                            abbreviation.startswith(last_word)
+                            and text.startswith(abbreviation[len(last_word) :], match.end())
+                            for abbreviation in ABBREVIATIONS
+                        )
 
                 if not is_abbreviation:
                     sentences.append(current_sentence)
@@ -172,10 +212,15 @@ def chunk_text_punctuation(
 
     # 2. Merge short sentences.
     merged_chunks = []
-    current_chunk = []
-    for sentence in sentences:
+    current_chunk = ""
+    bounded_sentences = (
+        part
+        for sentence in sentences
+        for part in _split_long_sentence("".join(sentence), chunk_len)
+    )
+    for sentence in bounded_sentences:
         if len(current_chunk) + len(sentence) <= chunk_len:
-            current_chunk.extend(sentence)
+            current_chunk += sentence
         else:
             if len(current_chunk) > 0:
                 merged_chunks.append(current_chunk)
@@ -190,20 +235,26 @@ def chunk_text_punctuation(
         first_chunk_short_flag = len(merged_chunks) > 0 and len(merged_chunks[0]) < min_chunk_len
         final_chunks = []
         for i, chunk in enumerate(merged_chunks):
-            if i == 1 and first_chunk_short_flag:
-                final_chunks[-1].extend(chunk)
+            if (
+                i == 1
+                and first_chunk_short_flag
+                and len(final_chunks[-1]) + len(chunk) <= chunk_len
+            ):
+                final_chunks[-1] += chunk
             else:
                 if len(chunk) >= min_chunk_len:
                     final_chunks.append(chunk)
                 else:
                     if len(final_chunks) == 0:
                         final_chunks.append(chunk)
+                    elif len(final_chunks[-1]) + len(chunk) <= chunk_len:
+                        final_chunks[-1] += chunk
                     else:
-                        final_chunks[-1].extend(chunk)
+                        final_chunks.append(chunk)
     else:
         final_chunks = merged_chunks
 
-    chunk_strings = ["".join(chunk).strip() for chunk in final_chunks if "".join(chunk).strip()]
+    chunk_strings = [chunk.strip() for chunk in final_chunks if chunk.strip()]
     return chunk_strings
 
 

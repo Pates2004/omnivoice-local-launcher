@@ -482,6 +482,24 @@ class RuntimeRepairTests(unittest.TestCase):
         self.assertEqual(self.contents(), before)
         self.assert_record_valid()
 
+    def test_atomic_cleanup_failure_preserves_original_replacement_error(self):
+        path = self.add_launcher()
+        before = path.read_bytes()
+        change = runtime.Change(path, before, b"Synthetic replacement", path.stat().st_mode)
+        with (
+            mock.patch.object(
+                runtime.os, "replace", side_effect=PermissionError("Primary file lock")
+            ),
+            mock.patch.object(
+                Path, "unlink", side_effect=PermissionError("Secondary cleanup lock")
+            ),
+            self.assertLogs(runtime.__name__, level="WARNING") as messages,
+        ):
+            with self.assertRaisesRegex(PermissionError, "Primary file lock"):
+                runtime._atomic_replace(self.root, change, change.after)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIn("Secondary cleanup lock", "\n".join(messages.output))
+
     def test_concurrent_external_change_is_preserved(self):
         self.add_launcher("one.exe")
         second = self.add_launcher("two.exe")

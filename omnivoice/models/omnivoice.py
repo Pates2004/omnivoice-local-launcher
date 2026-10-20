@@ -34,7 +34,7 @@ import os
 import re
 from dataclasses import dataclass, fields
 from functools import partial
-from numbers import Real
+from numbers import Integral, Real
 from typing import Any, List, Optional, Union
 
 import numpy as np
@@ -240,6 +240,43 @@ class OmniVoiceGenerationConfig:
     pad_duration: float = 0.1
     fade_duration: float = 0.1
 
+    def __post_init__(self):
+        self.validate()
+
+    def validate(self):
+        """Reject invalid schedules before reference encoding or device allocation."""
+        if (
+            isinstance(self.num_step, bool)
+            or not isinstance(self.num_step, Integral)
+            or self.num_step <= 0
+        ):
+            raise ValueError("num_step must be a positive integer")
+        for name in (
+            "guidance_scale",
+            "t_shift",
+            "layer_penalty_factor",
+            "position_temperature",
+            "class_temperature",
+            "audio_chunk_duration",
+            "audio_chunk_threshold",
+            "pad_duration",
+            "fade_duration",
+        ):
+            value = getattr(self, name)
+            positive = name == "t_shift"
+            message = f"{name} must be a finite {'positive' if positive else 'non-negative'} number"
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise ValueError(message)
+            try:
+                finite = math.isfinite(value)
+            except (OverflowError, ValueError) as exc:
+                raise ValueError(message) from exc
+            if not finite or (value <= 0 if positive else value < 0):
+                raise ValueError(message)
+        for name in ("denoise", "preprocess_prompt", "postprocess_output"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
+
     @classmethod
     def from_dict(cls, kwargs_dict):
         valid_keys = {f.name for f in fields(cls)}
@@ -258,6 +295,7 @@ class GenerationTask:
     ref_audio_tokens: List[Optional[torch.Tensor]]
     ref_rms: List[Optional[float]]
     speed: Optional[List[float]] = None
+    durations: Optional[List[Optional[float]]] = None
 
     def get_indices(self, config: OmniVoiceGenerationConfig, frame_rate: int):
         if config.audio_chunk_duration <= 0:
@@ -280,6 +318,7 @@ class GenerationTask:
             ref_audio_tokens=[self.ref_audio_tokens[i] for i in indices],
             ref_rms=[self.ref_rms[i] for i in indices],
             speed=[self.speed[i] for i in indices] if self.speed else None,
+            durations=[self.durations[i] for i in indices] if self.durations is not None else None,
         )
 
 
@@ -508,8 +547,12 @@ class OmniVoice(PreTrainedModel):
 
     def unload_asr_model(self):
         """Drop Whisper, then return unused CUDA/ROCm/XPU memory to the driver."""
+        # load_asr_model(device=...) can override the configured default. Read
+        # its actual placement without retaining the pipeline during collection.
+        device = getattr(self._asr_pipe, "device", None)
         self._asr_pipe = None
-        device = self._asr_device if self._asr_device is not None else self.device
+        if device is None:
+            device = self._asr_device if self._asr_device is not None else self.device
         release_memory(device, torch)
 
     def release_inference_caches(self):
@@ -689,6 +732,9 @@ class OmniVoice(PreTrainedModel):
                 applies to all items; if a list, one value per item.
                 ``None`` (default) lets the model estimate duration from text.
                 Overrides ``speed`` when both are provided.
+                Quantized to codec frames. For chunked speech the frame budget
+                is shared across chunks; join silence, edge padding and optional
+                silence removal can change the final waveform duration.
             speed: Finite, positive speaking speed factor. ``> 1.0`` for faster, ``< 1.0`` for
                 slower. If a list, one value per item. ``None`` (default) uses
                 the model's default estimation.
@@ -737,6 +783,7 @@ class OmniVoice(PreTrainedModel):
             if generation_config is not None
             else OmniVoiceGenerationConfig.from_dict(kwargs)
         )
+        gen_config.validate()
 
         self.eval()
 
@@ -997,10 +1044,13 @@ class OmniVoice(PreTrainedModel):
         all_chunks = []
         for i in range(task.batch_size):
             avg_tokens_per_char = task.target_lens[i] / len(task.texts[i])
-            text_chunk_len = int(
-                gen_config.audio_chunk_duration
-                * self.audio_tokenizer.config.frame_rate
-                / avg_tokens_per_char
+            text_chunk_len = max(
+                1,
+                int(
+                    gen_config.audio_chunk_duration
+                    * self.audio_tokenizer.config.frame_rate
+                    / avg_tokens_per_char
+                ),
             )
             chunks = chunk_text_punctuation(
                 text=task.texts[i],
@@ -1009,6 +1059,40 @@ class OmniVoice(PreTrainedModel):
             )
             logger.debug(f"Item {i} chunked into {len(chunks)} pieces: {chunks}")
             all_chunks.append(chunks)
+
+        chunk_budgets = [None] * task.batch_size
+        for i, chunks in enumerate(all_chunks):
+            if task.durations is None or task.durations[i] is None:
+                continue
+            total = task.target_lens[i]
+            if total < len(chunks):
+                raise ValueError(
+                    f"Requested duration for item {i + 1} permits {total} audio frames, "
+                    f"but {len(chunks)} text chunks require at least one frame each. "
+                    "Increase duration or audio_chunk_duration."
+                )
+            estimates = [
+                self._estimate_target_tokens(
+                    chunk,
+                    task.ref_texts[i],
+                    task.ref_audio_tokens[i].size(-1)
+                    if task.ref_audio_tokens[i] is not None
+                    else None,
+                    speed=1.0,
+                )
+                for chunk in chunks
+            ]
+            # Reserve a frame for every nonempty chunk, then distribute the
+            # remaining conditioning budget proportionally using integer math.
+            # Never crop waveforms or retime speech to force the requested length.
+            weight = sum(estimates)
+            remaining = total - len(chunks)
+            allocations = [1 + remaining * estimate // weight for estimate in estimates]
+            remainders = [remaining * estimate % weight for estimate in estimates]
+            deficit = total - sum(allocations)
+            for index in sorted(range(len(chunks)), key=lambda j: -remainders[j])[:deficit]:
+                allocations[index] += 1
+            chunk_budgets[i] = allocations
 
         has_ref = [t is not None for t in task.ref_audio_tokens]
         assert all(has_ref) or not any(has_ref), (
@@ -1021,14 +1105,20 @@ class OmniVoice(PreTrainedModel):
         # chunk_results[item_idx] = list of generated token tensors per chunk
         chunk_results = [[] for _ in range(task.batch_size)]
 
-        def _run_batch(indices, texts, ref_audios, ref_texts):
+        def _run_batch(
+            indices, texts, ref_audios, ref_texts, chunk_index, generated_reference=False
+        ):
             speed_list = task.speed
             target_lens = [
-                self._estimate_target_tokens(
+                chunk_budgets[i][chunk_index]
+                if chunk_budgets[i] is not None
+                else self._estimate_target_tokens(
                     texts[j],
                     ref_texts[j],
                     ref_audios[j].size(-1) if ref_audios[j] is not None else None,
-                    speed=speed_list[i] if speed_list else 1.0,
+                    # A generated first chunk already embodies the chosen speed.
+                    # Applying it again would compound speed or duration scaling.
+                    speed=speed_list[i] if speed_list and not generated_reference else 1.0,
                 )
                 for j, i in enumerate(indices)
             ]
@@ -1061,6 +1151,7 @@ class OmniVoice(PreTrainedModel):
                     texts=[all_chunks[i][ci] for i in indices],
                     ref_audios=[task.ref_audio_tokens[i] for i in indices],
                     ref_texts=[task.ref_texts[i] for i in indices],
+                    chunk_index=ci,
                 )
         else:
             # No reference audio — generate chunk 0 for all items first,
@@ -1071,6 +1162,7 @@ class OmniVoice(PreTrainedModel):
                 texts=[all_chunks[i][0] for i in indices_0],
                 ref_audios=[None] * len(indices_0),
                 ref_texts=[None] * len(indices_0),
+                chunk_index=0,
             )
             first_chunk_map = {idx: chunk_results[idx][0] for idx in indices_0}
 
@@ -1084,6 +1176,8 @@ class OmniVoice(PreTrainedModel):
                     texts=[all_chunks[i][ci] for i in indices],
                     ref_audios=[first_chunk_map[i] for i in indices],
                     ref_texts=[all_chunks[i][0] for i in indices],
+                    chunk_index=ci,
+                    generated_reference=True,
                 )
 
         return chunk_results
@@ -1153,6 +1247,8 @@ class OmniVoice(PreTrainedModel):
             text_list = [
                 _normalize_text(t, lang) for t, lang in zip(text_list, language_list, strict=True)
             ]
+            if any(not isinstance(item, str) or not item.strip() for item in text_list):
+                raise ValueError("normalized text must contain non-empty strings")
         for i, s in enumerate(instruct_list):
             if s is None:
                 continue
@@ -1234,6 +1330,7 @@ class OmniVoice(PreTrainedModel):
             ref_audio_tokens=ref_audio_tokens_list,
             ref_rms=ref_rms_list,
             speed=speed_list,
+            durations=durations,
         )
 
     def _estimate_target_tokens(self, text, ref_text, num_ref_audio_tokens, speed=1.0):
@@ -1757,9 +1854,16 @@ def _get_time_steps(
 ) -> torch.Tensor:
     if device is None:
         device = torch.device("cpu")
-    timesteps = torch.linspace(t_start, t_end, num_step + 1).to(device)
-    timesteps = t_shift * timesteps / (1 + (t_shift - 1) * timesteps)
-    return timesteps
+    # Build this small schedule on CPU in float64. The rearranged ratio avoids
+    # cancellation at t=1 for small shifts and overflow for large shifts. Cast
+    # only after evaluation so even backends without float64 support can use it.
+    timesteps = torch.linspace(t_start, t_end, num_step + 1, dtype=torch.float64)
+    if t_shift <= 1:
+        numerator = t_shift * timesteps
+        timesteps = numerator / ((1 - timesteps) + numerator)
+    else:
+        timesteps = timesteps / ((1 - timesteps) / t_shift + timesteps)
+    return timesteps.to(device=device, dtype=torch.float32)
 
 
 _NONVERBAL_PATTERN = re.compile(

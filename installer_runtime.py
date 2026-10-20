@@ -19,6 +19,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import ntpath
 import os
 import re
@@ -30,6 +31,8 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeRepairError(RuntimeError):
@@ -373,8 +376,10 @@ def _atomic_replace(root: Path, change: Change, data: bytes) -> None:
         os.chmod(temporary, stat.S_IMODE(change.mode))
         os.replace(temporary, change.path)
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove partial runtime file %s: %s", temporary, exc)
 
 
 def _discard_backup(root: Path, backup: Path, count: int) -> None:

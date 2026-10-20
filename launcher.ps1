@@ -4,6 +4,10 @@ param(
     [string]$Mode = "Auto",
     [ValidateSet("Auto", "CUDA", "ROCm", "XPU", "CPU")]
     [string]$Backend = "Auto",
+    [ValidateRange(1, 3600)]
+    [int]$ProbeTimeoutSeconds = 300,
+    [ValidateRange(1, 300)]
+    [int]$DiscoveryTimeoutSeconds = 10,
     [switch]$NoBrowser,
     [switch]$BootstrapOnly,
     [switch]$InstallOnly,
@@ -49,15 +53,99 @@ function Assert-ProjectChildPath {
     )) {
         throw "Refusing to modify a directory outside OmniVoice: $target"
     }
+    $current = $target
+    while ($current -ne $root) {
+        try { $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop }
+        catch [System.Management.Automation.ItemNotFoundException] { $item = $null }
+        if ($null -ne $item) { Assert-LauncherNonRedirectingEntry $current $item.Attributes }
+        $current = [IO.Path]::GetDirectoryName($current)
+    }
     return $target
+}
+
+function Get-LauncherReparseTag {
+    param([string]$Path)
+    if (-not ('LauncherReparseMetadata' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class LauncherReparseMetadata {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AttributeTagInfo {
+        public uint Attributes;
+        public uint Tag;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string path, uint access, uint share, IntPtr security,
+        uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandleEx(
+        SafeFileHandle handle, int infoClass, out AttributeTagInfo info, uint size);
+    public static uint GetTag(string path) {
+        using (SafeFileHandle handle = CreateFile(
+            path, 0, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+            if (handle.IsInvalid) { throw new Win32Exception(Marshal.GetLastWin32Error()); }
+            AttributeTagInfo info;
+            if (!GetFileInformationByHandleEx(handle, 9, out info, 8)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return info.Tag;
+        }
+    }
+}
+"@
+    }
+    # Read metadata on the reparse point itself, never its destination.
+    return [LauncherReparseMetadata]::GetTag($Path)
+}
+
+function Assert-LauncherNonRedirectingEntry {
+    param([string]$Path, [IO.FileAttributes]$Attributes)
+    if ($Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        $tag = Get-LauncherReparseTag $Path
+        # NAME_SURROGATE identifies path redirection (symlinks/junctions).
+        # Cloud placeholders without this bit do not redirect the path.
+        if ($tag -band 0x20000000) { throw (New-UnsafeLauncherPathError $Path) }
+    }
+}
+
+function New-UnsafeLauncherPathError {
+    param([string]$Path)
+    $failure = New-Object InvalidOperationException("Managed runtime paths cannot contain links/junctions: $Path. / Katalogi srodowiska nie moga zawierac dowiazan ani punktow polaczen.")
+    $failure.Data['LauncherUnsafePath'] = $true
+    return $failure
+}
+
+function Test-UnsafeLauncherPathError {
+    param([Exception]$Exception)
+    while ($null -ne $Exception) {
+        if ($Exception.Data['LauncherUnsafePath']) { return $true }
+        $Exception = $Exception.InnerException
+    }
+    return $false
 }
 
 function Remove-LauncherDirectory {
     param([string]$Path)
-    if (-not (Test-Path -LiteralPath $Path)) { return }
     $target = Assert-ProjectChildPath $Path
+    if (-not (Test-Path -LiteralPath $target)) { return }
+    # Windows PowerShell recursive deletion can traverse directory junctions.
+    # Inspect the entire tree before deleting anything; never follow a link.
+    $pending = New-Object 'Collections.Generic.Stack[string]'
+    $pending.Push($target)
+    while ($pending.Count -gt 0) {
+        foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($pending.Pop())) {
+            $attributes = [IO.File]::GetAttributes($entry)
+            Assert-LauncherNonRedirectingEntry $entry $attributes
+            if ($attributes -band [IO.FileAttributes]::Directory) { $pending.Push($entry) }
+        }
+    }
     Remove-Item -LiteralPath $target -Recurse -Force
 }
+
 
 function Enter-LauncherLock {
     $lockPath = Assert-ProjectChildPath (Join-Path $WorkDir 'runtime.lock')
@@ -134,6 +222,244 @@ function Invoke-WithIsolatedPythonEnvironment {
     }
 }
 
+function Invoke-TimedPythonProbe {
+    param(
+        [string]$Python, [string[]]$Arguments, [string]$Phase,
+        [ValidateRange(1, 3600)][int]$TimeoutSeconds = 300
+    )
+    if (-not ('LauncherProbeProcess' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class LauncherProbeProcess {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes {
+        public int Length;
+        public IntPtr Descriptor;
+        [MarshalAs(UnmanagedType.Bool)] public bool Inherit;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct StartupInfo {
+        public int Size;
+        public string Reserved, Desktop, Title;
+        public uint X, Y, XSize, YSize, XChars, YChars, Fill, Flags;
+        public ushort Show, ReservedSize;
+        public IntPtr ReservedPointer, Input, Output, Error;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInformation {
+        public IntPtr Process, Thread;
+        public uint ProcessId, ThreadId;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BasicLimit {
+        public long ProcessTime, JobTime;
+        public uint Flags;
+        public UIntPtr MinimumWorkingSet, MaximumWorkingSet;
+        public uint ActiveProcesses;
+        public UIntPtr Affinity;
+        public uint Priority, Scheduling;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoCounters { public ulong A, B, C, D, E, F; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ExtendedLimit {
+        public BasicLimit Basic;
+        public IoCounters Io;
+        public UIntPtr ProcessMemory, JobMemory, PeakProcess, PeakJob;
+    }
+    public sealed class Result {
+        public int ExitCode;
+        public uint ProcessId;
+        public bool TimedOut;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimit data, uint size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(IntPtr job, uint code);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(
+        string application, StringBuilder command, IntPtr processAttributes,
+        IntPtr threadAttributes, bool inheritHandles, uint flags, IntPtr environment,
+        string directory, ref StartupInfo startup, out ProcessInformation info);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(
+        string path, uint access, uint share, ref SecurityAttributes attributes,
+        uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+    private static Win32Exception Failure(string phase) {
+        return new Win32Exception(Marshal.GetLastWin32Error(), phase);
+    }
+    public static string QuoteArgument(string value) {
+        StringBuilder quoted = new StringBuilder("\"");
+        int slashes = 0;
+        foreach (char c in value) {
+            if (c == '\\') { slashes++; continue; }
+            if (c == '"') { quoted.Append('\\', slashes * 2 + 1); quoted.Append(c); }
+            else { quoted.Append('\\', slashes); quoted.Append(c); }
+            slashes = 0;
+        }
+        quoted.Append('\\', slashes * 2);
+        return quoted.Append('"').ToString();
+    }
+    private static string CommandLine(ref string application, string[] arguments) {
+        string extension = Path.GetExtension(application);
+        if (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)) {
+            // Legacy command shims are supported only when every argument can
+            // remain one literal quoted CMD token. Never escape arbitrary code.
+            char[] unsafeChars = { '"', '%', '!', '^', '\r', '\n', '\0' };
+            if (application.IndexOfAny(unsafeChars) >= 0) {
+                throw new ArgumentException("Unsupported characters in a Python command shim path.");
+            }
+            StringBuilder script = new StringBuilder("\"").Append(application).Append('"');
+            foreach (string argument in arguments) {
+                if (argument.IndexOfAny(unsafeChars) >= 0) {
+                    throw new ArgumentException("Unsupported characters in Python command shim arguments.");
+                }
+                script.Append(" \"").Append(argument).Append('"');
+            }
+            application = Environment.GetEnvironmentVariable("ComSpec");
+            if (String.IsNullOrEmpty(application) || !Path.IsPathRooted(application)) {
+                throw new ArgumentException("A valid ComSpec is required for a Python command shim.");
+            }
+            return QuoteArgument(application) + " /d /s /v:off /c \"" + script + "\"";
+        }
+        StringBuilder command = new StringBuilder(QuoteArgument(application));
+        foreach (string argument in arguments) { command.Append(' ').Append(QuoteArgument(argument)); }
+        return command.ToString();
+    }
+    public static Result Run(
+        string application, string[] arguments, string directory,
+        string outputPath, string errorPath, int timeoutMilliseconds) {
+        StringBuilder command = new StringBuilder(CommandLine(ref application, arguments));
+        IntPtr job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) { throw Failure("Could not create the owned probe job."); }
+        ProcessInformation process = new ProcessInformation();
+        bool assigned = false;
+        try {
+            ExtendedLimit limits = new ExtendedLimit();
+            limits.Basic.Flags = 0x2000; // KILL_ON_JOB_CLOSE; job handle is not inheritable.
+            if (!SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(limits))) {
+                throw Failure("Could not configure the owned probe job.");
+            }
+            SecurityAttributes inherit = new SecurityAttributes();
+            inherit.Length = Marshal.SizeOf(inherit);
+            inherit.Inherit = true;
+            using (SafeFileHandle output = CreateFile(outputPath, 0x40000000, 3, ref inherit, 1, 0x80, IntPtr.Zero))
+            using (SafeFileHandle error = CreateFile(errorPath, 0x40000000, 3, ref inherit, 1, 0x80, IntPtr.Zero))
+            using (SafeFileHandle input = CreateFile("NUL", 0x80000000, 3, ref inherit, 3, 0x80, IntPtr.Zero)) {
+                if (output.IsInvalid || error.IsInvalid || input.IsInvalid) {
+                    throw Failure("Could not open private probe streams.");
+                }
+                StartupInfo startup = new StartupInfo();
+                startup.Size = Marshal.SizeOf(startup);
+                startup.Flags = 0x100; // USESTDHANDLES
+                startup.Input = input.DangerousGetHandle();
+                startup.Output = output.DangerousGetHandle();
+                startup.Error = error.DangerousGetHandle();
+                // Suspend before first instruction, assign ownership, then resume.
+                if (!CreateProcess(application, command, IntPtr.Zero, IntPtr.Zero,
+                    true, 0x08000004, IntPtr.Zero, directory, ref startup, out process)) {
+                    throw Failure("Could not create the read-only probe process.");
+                }
+                if (!AssignProcessToJobObject(job, process.Process)) {
+                    throw Failure("Could not assign the suspended probe to its owned job; refusing an unprotected probe.");
+                }
+                assigned = true;
+                if (ResumeThread(process.Thread) == UInt32.MaxValue) {
+                    throw Failure("Could not resume the owned probe.");
+                }
+                uint wait = WaitForSingleObject(process.Process, (uint)timeoutMilliseconds);
+                Result result = new Result();
+                result.ProcessId = process.ProcessId;
+                result.TimedOut = wait == 258;
+                if (result.TimedOut) {
+                    if (!TerminateJobObject(job, 124)) { throw Failure("Could not terminate the timed-out owned probe job."); }
+                    WaitForSingleObject(process.Process, 5000);
+                } else if (wait != 0) { throw Failure("Could not wait for the owned probe."); }
+                uint code;
+                if (!GetExitCodeProcess(process.Process, out code)) { throw Failure("Could not read the probe exit status."); }
+                result.ExitCode = unchecked((int)code);
+                return result;
+            }
+        } finally {
+            // On assignment failure this is still the exact held, suspended
+            // process; never enumerate/kill unrelated Python processes by name.
+            if (process.Process != IntPtr.Zero && !assigned) {
+                TerminateProcess(process.Process, 125);
+                WaitForSingleObject(process.Process, 5000);
+            }
+            CloseHandle(job);
+            if (process.Thread != IntPtr.Zero) { CloseHandle(process.Thread); }
+            if (process.Process != IntPtr.Zero) { CloseHandle(process.Process); }
+        }
+    }
+}
+"@
+    }
+    $probeRoot = Assert-ProjectChildPath (Join-Path $WorkDir 'probes')
+    New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
+    $probeId = [Guid]::NewGuid().ToString('N')
+    $outputPath = Join-Path $probeRoot ($probeId + '.stdout.log')
+    $errorPath = Join-Path $probeRoot ($probeId + '.stderr.log')
+    $keepLogs = $false
+    try {
+        $result = Invoke-WithIsolatedPythonEnvironment {
+            [LauncherProbeProcess]::Run($Python, $Arguments, $ProjectRoot,
+                $outputPath, $errorPath, $TimeoutSeconds * 1000)
+        }
+        $output = [IO.File]::ReadAllText($outputPath, [Text.Encoding]::UTF8)
+        $errors = [IO.File]::ReadAllText($errorPath, [Text.Encoding]::UTF8)
+        $global:LASTEXITCODE = [int]$result.ExitCode
+        if ($result.TimedOut) {
+            $keepLogs = $true
+            $failure = New-Object TimeoutException("$Phase timed out after $TimeoutSeconds seconds. The owned probe process tree was stopped. Logs: $outputPath ; $errorPath. / Przekroczono limit czasu kontroli; zatrzymano tylko jej procesy. Sprawdz podane logi.")
+            $failure.Data['LauncherProbeTimeout'] = $true
+            throw $failure
+        }
+        return [pscustomobject]@{
+            ExitCode = [int]$result.ExitCode
+            Output = @($output -split '\r?\n' | Where-Object { $_ -ne '' })
+            Errors = @($errors -split '\r?\n' | Where-Object { $_ -ne '' })
+        }
+    }
+    finally {
+        if (-not $keepLogs) {
+            foreach ($path in @($outputPath, $errorPath)) {
+                try { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } }
+                catch { Write-WarningMessage "Could not remove probe log: $path. $($_.Exception.Message)" }
+            }
+        }
+    }
+}
+
+function Test-ProbeTimeoutError {
+    param([Exception]$Exception)
+    while ($null -ne $Exception) {
+        if ($Exception.Data['LauncherProbeTimeout']) { return $true }
+        $Exception = $Exception.InnerException
+    }
+    return $false
+}
+
 function New-PipConfigurationError {
     param([string]$Message)
     $failure = New-Object InvalidOperationException($Message)
@@ -192,8 +518,9 @@ if missing_venv:
     try {
         $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = -1
-        $output = @(Invoke-WithIsolatedPythonEnvironment { & $Python -I -c $check $Command 2>&1 })
-        $exitCode = $global:LASTEXITCODE
+        $probe = Invoke-TimedPythonProbe $Python @('-I', '-X', 'utf8', '-c', $check, $Command) 'Pip configuration check' $ProbeTimeoutSeconds
+        $output = @($probe.Output) + @($probe.Errors)
+        $exitCode = $probe.ExitCode
     }
     finally { $ErrorActionPreference = $previousErrorAction }
     if ($exitCode -eq 0) { return }
@@ -222,7 +549,14 @@ function Invoke-Checked {
     if ($Arguments.Count -ge 3 -and $Arguments[0] -eq '-m' -and $Arguments[1] -eq 'pip') {
         Assert-PipRuntimeSettings $FilePath $Arguments[2]
     }
-    Invoke-WithIsolatedPythonEnvironment { & $FilePath -I @Arguments | Out-Host }
+    $readOnlyCheck = $Arguments.Count -gt 0 -and ($Arguments[0] -eq '-c' -or (
+        $Arguments.Count -ge 3 -and $Arguments[0] -eq '-m' -and
+        $Arguments[1] -eq 'pip' -and $Arguments[2] -eq 'check'))
+    if ($readOnlyCheck) {
+        $probe = Invoke-TimedPythonProbe $FilePath (@('-I', '-X', 'utf8') + $Arguments) $Description $ProbeTimeoutSeconds
+        @($probe.Output) + @($probe.Errors) | Out-Host
+    }
+    else { Invoke-WithIsolatedPythonEnvironment { & $FilePath -I @Arguments | Out-Host } }
     if ($LASTEXITCODE -ne 0) {
         throw "$Description failed with exit code $LASTEXITCODE."
     }
@@ -433,12 +767,15 @@ function Test-CompatiblePython {
     try {
         $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = -1
-        Invoke-WithIsolatedPythonEnvironment {
-            & $Python -I -c "import sys; lo=tuple(map(int, sys.argv[1].split('.'))); hi=tuple(map(int, sys.argv[2].split('.'))); raise SystemExit(0 if lo <= sys.version_info[:2] < hi and sys.maxsize > 2**32 else 1)" $minimum $maximum 2>$null | Out-Null
-        }
-        return $global:LASTEXITCODE -eq 0
+        $probe = Invoke-TimedPythonProbe $Python @('-I', '-X', 'utf8', '-c',
+            "import sys; lo=tuple(map(int, sys.argv[1].split('.'))); hi=tuple(map(int, sys.argv[2].split('.'))); raise SystemExit(0 if lo <= sys.version_info[:2] < hi and sys.maxsize > 2**32 else 1)",
+            $minimum, $maximum) 'Python compatibility check' $DiscoveryTimeoutSeconds
+        return $probe.ExitCode -eq 0
     }
-    catch { return $false }
+    catch {
+        if (Test-ProbeTimeoutError $_.Exception) { Write-WarningMessage $_.Exception.Message }
+        return $false
+    }
     finally { $ErrorActionPreference = $previousErrorAction }
 }
 
@@ -454,17 +791,23 @@ function Find-SystemPython {
             try {
                 $ErrorActionPreference = 'Continue'
                 $global:LASTEXITCODE = -1
-                $encodedPath = (Invoke-WithIsolatedPythonEnvironment {
-                    & $py.Source $selector -I -c "import json, sys; print(json.dumps(sys.executable))" 2>$null
-                } | Select-Object -Last 1)
-                if ($global:LASTEXITCODE -eq 0 -and $encodedPath) {
+                $probe = Invoke-TimedPythonProbe $py.Source @($selector, '-I', '-X', 'utf8', '-c',
+                    'import json, sys; print(json.dumps(sys.executable))') 'System Python discovery' $DiscoveryTimeoutSeconds
+                $encodedPath = $probe.Output | Select-Object -Last 1
+                if ($probe.ExitCode -eq 0 -and $encodedPath) {
                     # ASCII JSON avoids OEM/ANSI/UTF-8 pipe decoding differences
                     # for interpreter paths containing non-ASCII account names.
                     $path = ConvertFrom-Json -InputObject ([string]$encodedPath) -ErrorAction Stop
                     if ($path -is [string] -and [IO.Path]::IsPathRooted($path)) { $candidates += $path }
                 }
             }
-            catch { continue }
+            catch {
+                if (Test-ProbeTimeoutError $_.Exception) {
+                    Write-WarningMessage $_.Exception.Message
+                    break
+                }
+                continue
+            }
             finally { $ErrorActionPreference = $previousErrorAction }
         }
     }
@@ -675,7 +1018,7 @@ function Install-PythonBootstrapTransaction {
         return $python
     }
     catch {
-        if (Test-RuntimeInUseError $_.Exception) { throw }
+        if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
         $activationError = $_.Exception.Message
         $restored = $false
         try {
@@ -687,7 +1030,7 @@ function Install-PythonBootstrapTransaction {
             }
         }
         catch {
-            if (Test-RuntimeInUseError $_.Exception) { throw }
+            if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
             throw "Python bootstrap failed and automatic recovery failed. Inspect the environment at $ActiveRoot and backup at $backupRoot. Bootstrap error: $activationError Recovery error: $($_.Exception.Message)"
         }
         if ($restored) {
@@ -705,10 +1048,10 @@ function Invoke-AcceleratorProbe {
         # Windows PowerShell 5.1 wraps native stderr warnings in ErrorRecords.
         # A warning must not abort parsing the probe's JSON result and exit code.
         $ErrorActionPreference = 'Continue'
-        $output = @(Invoke-WithIsolatedPythonEnvironment {
-            & $Python -I -X utf8 $probeScript --validate $ExpectedBackend --requirements $RuntimeRequirementsPath --json 2>&1
-        })
-        $exitCode = $LASTEXITCODE
+        $probe = Invoke-TimedPythonProbe $Python @('-I', '-X', 'utf8', $probeScript,
+            '--validate', $ExpectedBackend, '--requirements', $RuntimeRequirementsPath, '--json') 'Accelerator validation' $ProbeTimeoutSeconds
+        $output = @($probe.Output) + @($probe.Errors)
+        $exitCode = $probe.ExitCode
     } finally { $ErrorActionPreference = $previousErrorAction }
     $textOutput = ($output | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
     $jsonLine = $output | ForEach-Object { $_.ToString() } |
@@ -765,10 +1108,19 @@ function Invoke-EntryPointRepair {
     try {
         $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = -1
-        $output = @(Invoke-WithIsolatedPythonEnvironment {
-            & $Python -I -B $helper --root $EnvironmentRoot $operation --json 2>&1
-        })
-        $exitCode = $global:LASTEXITCODE
+        if ($Apply) {
+            # Mutation is transactional; do not interrupt a repair halfway.
+            $output = @(Invoke-WithIsolatedPythonEnvironment {
+                & $Python -I -B $helper --root $EnvironmentRoot $operation --json 2>&1
+            })
+            $exitCode = $global:LASTEXITCODE
+        }
+        else {
+            $probe = Invoke-TimedPythonProbe $Python @('-I', '-B', '-X', 'utf8', $helper,
+                '--root', $EnvironmentRoot, $operation, '--json') 'Runtime entry-point check' $ProbeTimeoutSeconds
+            $output = @($probe.Output) + @($probe.Errors)
+            $exitCode = $probe.ExitCode
+        }
     }
     finally { $ErrorActionPreference = $previousErrorAction }
     $jsonLine = $output | ForEach-Object { $_.ToString() } |
@@ -817,8 +1169,10 @@ function Invoke-QuietRuntimeCheck {
     try {
         $ErrorActionPreference = 'Continue'
         $global:LASTEXITCODE = -1
-        $output = @(Invoke-WithIsolatedPythonEnvironment { & $Python @Arguments 2>&1 })
-        $exitCode = $global:LASTEXITCODE
+        $probeArguments = @($Arguments[0], '-X', 'utf8') + @($Arguments | Select-Object -Skip 1)
+        $probe = Invoke-TimedPythonProbe $Python $probeArguments $FailureMessage $ProbeTimeoutSeconds
+        $output = @($probe.Output) + @($probe.Errors)
+        $exitCode = $probe.ExitCode
     }
     finally { $ErrorActionPreference = $previousErrorAction }
     if ($exitCode -ne 0) {
@@ -875,7 +1229,7 @@ function Test-Runtime {
     }
     catch {
         $script:LastRuntimeError = $_.Exception.Message
-        if (Test-RuntimeInUseError $_.Exception) { throw }
+        if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
         if (Test-PipConfigurationError $_.Exception) { throw }
         return $false
     }
@@ -883,10 +1237,10 @@ function Test-Runtime {
 
 function Get-RuntimePythonVersion {
     param([string]$Python)
-    $versionOutput = Invoke-WithIsolatedPythonEnvironment {
-        & $Python -I -c 'import platform; print(platform.python_version())'
-    }
-    $exitCode = $LASTEXITCODE
+    $probe = Invoke-TimedPythonProbe $Python @('-I', '-X', 'utf8', '-c',
+        'import platform; print(platform.python_version())') 'Runtime Python version' $DiscoveryTimeoutSeconds
+    $versionOutput = $probe.Output
+    $exitCode = $probe.ExitCode
     $version = @($versionOutput) | Select-Object -Last 1
     if ($exitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$version)) {
         throw "Could not determine the runtime Python version (exit code $exitCode)."
@@ -999,7 +1353,7 @@ function Install-RuntimeTransaction {
         }
     }
     catch {
-        if (Test-RuntimeInUseError $_.Exception) { throw }
+        if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
         if (Test-PipConfigurationError $_.Exception) { throw }
         throw "The staged environment was not activated. $($_.Exception.Message)"
     }
@@ -1018,7 +1372,7 @@ function Install-RuntimeTransaction {
         return $activePython
     }
     catch {
-        if (Test-RuntimeInUseError $_.Exception) { throw }
+        if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
         $activationError = $_.Exception.Message
         $activationWasPipConfigurationError = Test-PipConfigurationError $_.Exception
         $failedRoot = "$activeRoot.failed"
@@ -1036,7 +1390,7 @@ function Install-RuntimeTransaction {
             Remove-LauncherDirectory $failedRoot
         }
         catch {
-            if (Test-RuntimeInUseError $_.Exception) { throw }
+            if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
             $recoveryState = if ($restored) { 'The previous environment was restored, but failed-runtime cleanup failed.' }
                 else { "Automatic recovery failed. Inspect the environment at $activeRoot, backup at $backupRoot and failed runtime at $failedRoot." }
             if ($activationWasPipConfigurationError) {
@@ -1092,7 +1446,7 @@ function Install-WithRecoveryChoice {
             }
         }
         catch {
-            if (Test-RuntimeInUseError $_.Exception) { throw }
+            if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
             if (Test-PipConfigurationError $_.Exception) { throw }
             $details = $_.Exception.Message
             if ($SelectedBackend -eq "cpu") { throw $details }

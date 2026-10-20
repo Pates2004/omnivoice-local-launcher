@@ -3,6 +3,7 @@
 import ast
 import importlib.util
 import io
+import logging
 import math
 import unittest
 from dataclasses import dataclass
@@ -60,6 +61,8 @@ def engine_namespace(torch_module=None):
         "_prepare_inference_inputs",
         "_decode_and_post_process",
         "_post_process_audio",
+        "_get_time_steps",
+        "_generate_iterative",
     }
     nodes = [
         node
@@ -76,6 +79,7 @@ def engine_namespace(torch_module=None):
         torch=torch_module,
         np=np,
         math=math,
+        logger=logging.getLogger(__name__),
         dataclass=dataclass,
         _VOICE_CLONE_PROMPT_FORMAT_VERSION=1,
         remove_silence=Mock(side_effect=lambda audio, *args, **kwargs: np.nan_to_num(audio)),
@@ -95,6 +99,8 @@ def audio_namespace():
         "audiosegment_to_numpy",
         "remove_silence_edges",
         "remove_silence",
+        "load_audio_bytes",
+        "load_waveform",
     }
     nodes = [
         node
@@ -285,6 +291,51 @@ class ReferenceWaveformLayoutTests(unittest.TestCase):
                 self.assertIs(normalize(waveform, 24000), waveform)
 
 
+@unittest.skipUnless(
+    importlib.util.find_spec("soundfile"), "Optional real compressed audio validation"
+)
+class AudioFormatTests(unittest.TestCase):
+    def test_available_reference_formats_preserve_layout(self):
+        import soundfile as sf
+
+        namespace = audio_namespace()
+        namespace.update(io=io, sf=sf)
+        rate = 48000
+        positions = np.arange(rate // 10, dtype=np.float32) / rate
+        channels = np.stack(
+            (0.2 * np.sin(2 * np.pi * 240 * positions), 0.6 * np.cos(2 * np.pi * 300 * positions))
+        )
+        formats = (
+            ("WAV", "PCM_16"),
+            ("FLAC", "PCM_16"),
+            ("OGG", "VORBIS"),
+            ("OGG", "OPUS"),
+            ("MP3", "MPEG_LAYER_III"),
+            ("AIFF", "PCM_16"),
+            ("AU", "PCM_16"),
+            ("CAF", "PCM_16"),
+        )
+        tested = []
+        for format, subtype in formats:
+            if not sf.check_format(format, subtype):
+                continue
+            with self.subTest(format=format, subtype=subtype):
+                buffer = io.BytesIO()
+                sf.write(buffer, channels.T, rate, format=format, subtype=subtype)
+                raw = buffer.getvalue()
+                loaded, actual_rate = namespace["load_waveform"](io.BytesIO(raw))
+                self.assertEqual(actual_rate, rate)
+                self.assertEqual(loaded.shape, channels.shape)
+                self.assertTrue(np.isfinite(loaded).all())
+                mono = namespace["load_audio_bytes"](raw, rate)
+                self.assertEqual(mono.shape, (1, channels.shape[-1]))
+                self.assertEqual(mono.dtype, np.float32)
+                np.testing.assert_allclose(mono, loaded.mean(axis=0, keepdims=True), atol=1e-6)
+                self.assertGreater(float(np.sqrt(np.mean(mono**2))), 0.05)
+                tested.append((format, subtype))
+        self.assertIn(("WAV", "PCM_16"), tested)
+
+
 @unittest.skipUnless(importlib.util.find_spec("pydub"), "Optional real PCM conversion validation")
 class PcmConversionTests(unittest.TestCase):
     def silence_utilities(self):
@@ -372,6 +423,62 @@ class SerializedPromptTests(unittest.TestCase):
         self.torch = torch
         self.engine = engine_namespace(torch)
         self.prompt_type = self.engine["VoiceClonePrompt"]
+
+    def test_time_schedule_remains_finite_for_valid_extreme_shifts(self):
+        for shift in (0.1, 1.0, 1e-12, 1e-300, 1e300):
+            with self.subTest(shift=shift):
+                steps = self.engine["_get_time_steps"](num_step=32, t_shift=shift)
+                self.assertEqual(steps.device.type, "cpu")
+                self.assertEqual(steps.dtype, self.torch.float32)
+                self.assertTrue(self.torch.isfinite(steps).all().item())
+                self.assertEqual(steps[0].item(), 0)
+                self.assertEqual(steps[-1].item(), 1)
+                self.assertTrue(((steps >= 0) & (steps <= 1)).all().item())
+                self.assertTrue((steps[1:] >= steps[:-1]).all().item())
+
+    def test_iterative_schedule_fills_every_frame_in_differently_padded_items(self):
+        torch = self.torch
+
+        class SyntheticModel:
+            device = "cpu"
+            config = SimpleNamespace(num_audio_codebook=2, audio_vocab_size=5, audio_mask_id=4)
+
+            def _prepare_inference_inputs(self, text, length, *args):
+                return {
+                    "input_ids": torch.full((1, 2, length + 2), 4, dtype=torch.long),
+                    "audio_mask": torch.tensor([[False, False] + [True] * length]),
+                }
+
+            def __call__(self, input_ids, **kwargs):
+                batch, codebooks, length = input_ids.shape
+                return SimpleNamespace(logits=torch.zeros((batch, codebooks, length, 5)))
+
+            def _predict_tokens_with_scoring(self, conditional, unconditional, config):
+                shape = conditional.shape[:-1]
+                return torch.ones(shape, dtype=torch.long), torch.zeros(shape)
+
+        task = SimpleNamespace(
+            batch_size=2,
+            texts=["First.", "Second."],
+            target_lens=[3, 7],
+            langs=[None, None],
+            instructs=[None, None],
+            ref_texts=[None, None],
+            ref_audio_tokens=[None, None],
+        )
+        for steps in (1, 2, 32):
+            for shift in (0.1, 1e-12, 1e300):
+                with self.subTest(steps=steps, shift=shift):
+                    config = SimpleNamespace(
+                        num_step=steps,
+                        t_shift=shift,
+                        denoise=True,
+                        layer_penalty_factor=1,
+                        position_temperature=0,
+                    )
+                    result = self.engine["_generate_iterative"](SyntheticModel(), task, config)
+                    self.assertEqual([tuple(tokens.shape) for tokens in result], [(2, 3), (2, 7)])
+                    self.assertTrue(all((tokens == 1).all().item() for tokens in result))
 
     def test_reversed_reference_array_is_ready_for_cpu_tokenizer_conversion(self):
         normalize = audio_namespace()["normalize_reference_waveform"]

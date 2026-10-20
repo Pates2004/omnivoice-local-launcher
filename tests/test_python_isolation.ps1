@@ -21,11 +21,12 @@ function Assert-IsolationTest {
     if (-not $Condition) { throw "Python isolation regression failed: $Message" }
 }
 
-if (-not $Python) { $Python = Find-SystemPython (Get-BackendProfile (Get-BackendMatrix) 'cpu') }
-Assert-IsolationTest (Test-Path -LiteralPath $Python) 'A test interpreter is available'
 $scratch = Join-ProjectMaterialPath $testProject ('trash\python-isolation-' + [Guid]::NewGuid().ToString('N'))
 Assert-ProjectChildPath $scratch | Out-Null
 [IO.Directory]::CreateDirectory($scratch) | Out-Null
+$WorkDir = Join-Path $scratch '.launcher'
+if (-not $Python) { $Python = Find-SystemPython (Get-BackendProfile (Get-BackendMatrix) 'cpu') }
+Assert-IsolationTest (Test-Path -LiteralPath $Python) 'A test interpreter is available'
 $poisonPath = Join-Path $scratch 'foreign-modules'
 [IO.Directory]::CreateDirectory($poisonPath) | Out-Null
 [IO.File]::WriteAllText((Join-Path $poisonPath 'foreign_python_poison.py'), 'VALUE = 42')

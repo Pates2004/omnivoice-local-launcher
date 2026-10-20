@@ -1,12 +1,13 @@
 """Generation argument alignment and chunk routing without torch or model weights."""
 
 import ast
+import importlib.util
 import logging
 import math
 import re
 import unittest
 from dataclasses import dataclass, fields
-from numbers import Real
+from numbers import Integral, Real
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -33,6 +34,7 @@ def load_engine():
         "_ensure_list",
         "_ensure_timing_list",
         "_estimate_target_tokens",
+        "_generate_chunked",
     }
     nodes = [
         node
@@ -51,6 +53,7 @@ def load_engine():
         __name__=__name__,
         dataclass=dataclass,
         Real=Real,
+        Integral=Integral,
         math=math,
         fields=fields,
         VoiceClonePrompt=Prompt,
@@ -60,6 +63,12 @@ def load_engine():
         _resolve_instruct=Mock(side_effect=lambda instruction, **kwargs: instruction),
         _normalize_text=Mock(side_effect=lambda text, language: text),
     )
+    text_spec = importlib.util.spec_from_file_location(
+        "_generation_chunking", ROOT / "omnivoice/utils/text.py"
+    )
+    text_module = importlib.util.module_from_spec(text_spec)
+    text_spec.loader.exec_module(text_module)
+    namespace["chunk_text_punctuation"] = text_module.chunk_text_punctuation
     exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
     return namespace
 
@@ -192,6 +201,18 @@ class GenerationInputTests(unittest.TestCase):
         self.model.create_voice_clone_prompt.assert_not_called()
         self.engine["_normalize_text"].assert_not_called()
 
+    def test_normalization_cannot_turn_valid_input_into_empty_generation(self):
+        for normalized in ("", " \n", None, 123):
+            self.engine["_normalize_text"].return_value = normalized
+            self.engine["_normalize_text"].side_effect = None
+            with (
+                self.subTest(normalized=normalized),
+                self.assertRaisesRegex(ValueError, "normalized text"),
+            ):
+                self.preprocess(ref_audio="voice.wav", normalize_text=True)
+            self.model.create_voice_clone_prompt.assert_not_called()
+            self.model.duration_estimator.estimate_duration.assert_not_called()
+
     def test_none_speed_means_normal_speed_for_that_item(self):
         task = self.preprocess(speed=[None, 1.25])
         self.assertEqual(task.target_lens, [100, 80])
@@ -276,6 +297,178 @@ class GenerationInputTests(unittest.TestCase):
         self.assertEqual(result, ["tokens:first", "tokens:second"])
         self.model._generate_iterative.assert_called_once()
         self.model._generate_chunked.assert_not_called()
+
+    def test_generation_configuration_rejects_invalid_values_without_model_work(self):
+        config_type = self.engine["OmniVoiceGenerationConfig"]
+        invalid = {
+            "num_step": (0, -1, True, 1.5, "2"),
+            "t_shift": (0, -1, True, "0.1", float("nan"), float("inf")),
+            "guidance_scale": (-1, True, "2", float("nan"), float("inf")),
+            "layer_penalty_factor": (-1, True, "2", float("nan")),
+            "position_temperature": (-1, True, "2", float("inf")),
+            "class_temperature": (-1, True, "2", float("nan")),
+            "audio_chunk_duration": (-1, True, "2", float("inf")),
+            "audio_chunk_threshold": (-1, True, "2", float("nan")),
+            "pad_duration": (-1, True, "2", float("inf")),
+            "fade_duration": (-1, True, "2", float("nan")),
+            "denoise": (None, 0, "false"),
+            "preprocess_prompt": (None, 1, "true"),
+            "postprocess_output": (None, 0, "false"),
+        }
+        for field, values in invalid.items():
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(ValueError, field):
+                        config_type(**{field: value})
+        self.model.create_voice_clone_prompt.assert_not_called()
+
+    def test_generation_configuration_preserves_supported_zero_values(self):
+        config = self.engine["OmniVoiceGenerationConfig"](
+            num_step=1,
+            guidance_scale=0,
+            layer_penalty_factor=0,
+            position_temperature=0,
+            class_temperature=0,
+            audio_chunk_duration=0,
+            audio_chunk_threshold=0,
+            pad_duration=0,
+            fade_duration=0,
+            denoise=False,
+            preprocess_prompt=False,
+            postprocess_output=False,
+        )
+        config.validate()
+
+    def test_modified_configuration_is_validated_before_eval_or_reference_encoding(self):
+        self.model.text_tokenizer = object()
+        self.model.eval = Mock()
+        config = self.engine["OmniVoiceGenerationConfig"]()
+        config.num_step = 0
+        with self.assertRaisesRegex(ValueError, "num_step"):
+            self.engine["generate"](
+                self.model, "Text.", ref_audio="reference.wav", generation_config=config
+            )
+        self.model.eval.assert_not_called()
+        self.model.create_voice_clone_prompt.assert_not_called()
+
+    def test_long_punctuation_free_text_reaches_multiple_small_inference_calls(self):
+        text = " ".join(["alpha", "beta", "gamma", "delta"] * 30)
+        self.model.duration_estimator.estimate_duration.side_effect = (
+            lambda text, reference, tokens: len(text)
+        )
+        task = self.model._preprocess_all(text=text)
+        self.model._generate_iterative = Mock(
+            side_effect=lambda task, config: [SimpleNamespace(size=lambda axis: 50)]
+        )
+        config = self.engine["OmniVoiceGenerationConfig"](audio_chunk_duration=1)
+        result = self.engine["_generate_chunked"](self.model, task, config)
+        self.assertGreater(len(result[0]), 15)
+        pieces = [call.args[0].texts[0] for call in self.model._generate_iterative.call_args_list]
+        self.assertTrue(all(len(piece) <= 25 for piece in pieces))
+        self.assertEqual(" ".join(pieces).split(), text.split())
+
+    def test_subcharacter_chunk_estimate_still_makes_forward_progress(self):
+        task = self.model._preprocess_all(text="abcd", duration=40)
+        self.model._generate_iterative = Mock(
+            side_effect=lambda task, config: [SimpleNamespace(size=lambda axis: 50)]
+        )
+        config = self.engine["OmniVoiceGenerationConfig"](audio_chunk_duration=0.01)
+        result = self.engine["_generate_chunked"](self.model, task, config)
+        self.assertEqual(len(result[0]), 4)
+        pieces = [call.args[0].texts[0] for call in self.model._generate_iterative.call_args_list]
+        self.assertEqual(pieces, list("abcd"))
+
+    def exact_chunk_generator(self, task, config):
+        return [
+            SimpleNamespace(size=lambda axis, length=length: length) for length in task.target_lens
+        ]
+
+    def test_explicit_chunk_duration_keeps_one_exact_frame_budget_per_item(self):
+        task = self.model._preprocess_all(
+            text=["A short sentence.", "Another somewhat longer sentence."],
+            duration=[40, 60],
+            speed=[2, 0.5],
+        )
+        self.model._generate_iterative = Mock(side_effect=self.exact_chunk_generator)
+        config = self.engine["OmniVoiceGenerationConfig"]()
+        result = self.engine["_generate_chunked"](self.model, task, config)
+        self.assertEqual(
+            [sum(tokens.size(-1) for tokens in chunks) for chunks in result], [1000, 1500]
+        )
+        self.assertTrue(all(tokens.size(-1) > 0 for chunks in result for tokens in chunks))
+        sliced = task.slice_task([1])
+        self.assertEqual(sliced.durations, [60])
+
+    def test_explicit_chunk_budgets_preserve_distinct_original_clone_references(self):
+        task = self.model._preprocess_all(
+            text=["A short sentence.", "Another somewhat longer sentence."],
+            ref_audio=["first.wav", "second.wav"],
+            ref_text=["First reference.", "Different reference words."],
+            duration=[40, 60],
+            speed=[2, 0.5],
+        )
+        self.model._generate_iterative = Mock(side_effect=self.exact_chunk_generator)
+        config = self.engine["OmniVoiceGenerationConfig"]()
+        result = self.engine["_generate_chunked"](self.model, task, config)
+        self.assertEqual(
+            [sum(tokens.size(-1) for tokens in chunks) for chunks in result], [1000, 1500]
+        )
+        for call in self.model._generate_iterative.call_args_list:
+            for text, tokens in zip(
+                call.args[0].ref_texts, call.args[0].ref_audio_tokens, strict=True
+            ):
+                original = task.ref_texts.index(text)
+                self.assertIs(tokens, task.ref_audio_tokens[original])
+
+    def test_mixed_explicit_and_estimated_chunk_targets_remain_independent(self):
+        task = self.model._preprocess_all(
+            text=["A short sentence.", "Another somewhat longer sentence."],
+            duration=[40, None],
+            speed=[2, 0.5],
+        )
+        self.model._generate_iterative = Mock(side_effect=self.exact_chunk_generator)
+        config = self.engine["OmniVoiceGenerationConfig"](audio_chunk_duration=0.1)
+        result = self.engine["_generate_chunked"](self.model, task, config)
+        self.assertEqual(sum(tokens.size(-1) for tokens in result[0]), 1000)
+        self.assertGreater(sum(tokens.size(-1) for tokens in result[1]), 0)
+
+    def test_impossibly_short_chunk_budget_fails_before_generation(self):
+        task = self.model._preprocess_all(text="one two three four", duration=0.04)
+        self.model._generate_iterative = Mock(side_effect=self.exact_chunk_generator)
+        config = self.engine["OmniVoiceGenerationConfig"](audio_chunk_duration=0.0001)
+        with self.assertRaisesRegex(ValueError, "duration.*chunk"):
+            self.engine["_generate_chunked"](self.model, task, config)
+        self.model._generate_iterative.assert_not_called()
+
+    def test_auto_reference_does_not_apply_speaking_speed_twice(self):
+        task = self.model._preprocess_all(text="one two three four five six seven eight", speed=2)
+        self.model._generate_iterative = Mock(side_effect=self.exact_chunk_generator)
+        estimate = Mock(wraps=self.model._estimate_target_tokens)
+        self.model._estimate_target_tokens = estimate
+        config = self.engine["OmniVoiceGenerationConfig"](audio_chunk_duration=0.5)
+        self.engine["_generate_chunked"](self.model, task, config)
+        self.assertGreater(estimate.call_count, 1)
+        self.assertEqual(estimate.call_args_list[0].kwargs["speed"], 2)
+        self.assertTrue(all(call.kwargs["speed"] == 1 for call in estimate.call_args_list[1:]))
+        generated = self.model._generate_iterative.call_args_list
+        first_tokens = generated[0].args[0].target_lens[0]
+        self.assertTrue(
+            all(call.args[0].ref_audio_tokens[0].size(-1) == first_tokens for call in generated[1:])
+        )
+
+    def test_clone_chunks_keep_original_reference_and_apply_speed_once(self):
+        task = self.model._preprocess_all(
+            text="one two three four five six seven eight", ref_audio="voice.wav", speed=2
+        )
+        self.model._generate_iterative = Mock(side_effect=self.exact_chunk_generator)
+        estimate = Mock(wraps=self.model._estimate_target_tokens)
+        self.model._estimate_target_tokens = estimate
+        config = self.engine["OmniVoiceGenerationConfig"](audio_chunk_duration=0.5)
+        self.engine["_generate_chunked"](self.model, task, config)
+        self.assertGreater(estimate.call_count, 1)
+        self.assertTrue(all(call.kwargs["speed"] == 2 for call in estimate.call_args_list))
+        for call in self.model._generate_iterative.call_args_list:
+            self.assertIs(call.args[0].ref_audio_tokens[0], task.ref_audio_tokens[0])
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_generation_inputs.py -v
           python -m unittest discover -s tests -p test_text_normalization.py -v
+          python -m unittest -v tests.test_text_chunking
 
   windows-launcher:
     runs-on: windows-latest

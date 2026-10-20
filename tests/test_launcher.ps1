@@ -18,6 +18,11 @@ function Assert-ProjectChildPath {
     return Assert-ProjectTestPath $Path $materialTestProject
 }
 
+# Real discovery/version probes must never create logs in the active checkout.
+# Keep ProjectRoot unchanged for imports and installer inputs, isolating only
+# this test session's mutable launcher state in its central synthetic fixture.
+$WorkDir = Join-ProjectMaterialPath $testProject ('trash\launcher-suite-' + [Guid]::NewGuid().ToString('N'))
+
 function Assert-Test {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw "Regression failed: $Message" }
@@ -136,7 +141,7 @@ Assert-Test (-not (Test-ReadyMarkerData ([pscustomobject]@{}) "rocm" "h" "p" "v"
         Assert-Test (-not (Test-Runtime $probePath 'cpu' $profile 'hardware' $scratch)) 'Full validation rejects failed dependency checks'
         Assert-Test ($script:LastRuntimeError -match 'PIP_CHECK_DETAIL' -and $script:LastRuntimeError -match 'exit code 7') 'Dependency failure retains stderr and native status'
         Assert-Test ($ErrorActionPreference -eq 'Stop') 'Dependency failure restores error policy'
-        function Invoke-UnlaunchablePython { throw 'Simulated interpreter invocation failure' }
+        function Invoke-TimedPythonProbe { throw 'Simulated interpreter invocation failure' }
         $failed = $false
         try { Invoke-QuietRuntimeCheck 'Invoke-UnlaunchablePython' @('-I') 'Interpreter check failed' }
         catch {
@@ -193,10 +198,9 @@ Assert-Test (-not (Test-ReadyMarkerData ([pscustomobject]@{}) "rocm" "h" "p" "v"
 
 # stderr warnings must not override the structured probe result in PowerShell 5.1.
 & {
-    function Invoke-FakeProbePython {
-        Write-Error 'Benign device warning'
+    function Invoke-TimedPythonProbe {
         $global:LASTEXITCODE = 0
-        Write-Output '{"ok":true,"backend":"cpu"}'
+        return [pscustomobject]@{ ExitCode = 0; Output = @('{"ok":true,"backend":"cpu"}'); Errors = @('Benign device warning') }
     }
     $result = Invoke-AcceleratorProbe 'Invoke-FakeProbePython' 'cpu'
     Assert-Test ($result.ok -and $result.backend -eq 'cpu') 'Warnings do not abort probe parsing'
@@ -204,10 +208,15 @@ Assert-Test (-not (Test-ReadyMarkerData ([pscustomobject]@{}) "rocm" "h" "p" "v"
 }
 
 & {
-    function Invoke-VersionPython {
-        Assert-Test ($args[0] -eq '-I') 'Marker version probe uses isolated Python'
+    $realTimedProbe = ${function:Invoke-TimedPythonProbe}
+    function Invoke-TimedPythonProbe {
+        param($Python, $Arguments, $Phase, $TimeoutSeconds)
+        if ($Python -ne 'Invoke-VersionPython') {
+            return & $realTimedProbe @PSBoundParameters
+        }
+        Assert-Test ($Arguments[0] -eq '-I') 'Marker version probe uses isolated Python'
         $global:LASTEXITCODE = $versionExitCode
-        if ($null -ne $versionText) { Write-Output $versionText }
+        return [pscustomobject]@{ ExitCode = $versionExitCode; Output = @($versionText); Errors = @() }
     }
     $versionExitCode = 0
     $versionText = ' 3.12.10 '
@@ -342,4 +351,6 @@ if ($Portable) { & (Join-Path $PSScriptRoot 'test_python_isolation.ps1') -Python
 else { & (Join-Path $PSScriptRoot 'test_python_isolation.ps1') }
 & (Join-Path $PSScriptRoot 'test_runtime_in_use.ps1')
 & (Join-Path $PSScriptRoot 'test_runtime_relocation.ps1')
+& (Join-Path $PSScriptRoot 'test_launcher_paths.ps1')
+& (Join-Path $PSScriptRoot 'test_probe_process.ps1')
 Write-Host "Launcher regression tests: OK"

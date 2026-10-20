@@ -353,4 +353,5 @@ else { & (Join-Path $PSScriptRoot 'test_python_isolation.ps1') }
 & (Join-Path $PSScriptRoot 'test_runtime_relocation.ps1')
 & (Join-Path $PSScriptRoot 'test_launcher_paths.ps1')
 & (Join-Path $PSScriptRoot 'test_probe_process.ps1')
+& (Join-Path $PSScriptRoot 'test_launcher_lifecycle.ps1')
 Write-Host "Launcher regression tests: OK"

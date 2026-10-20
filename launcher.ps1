@@ -755,7 +755,7 @@ function Save-BackendPreference {
 }
 
 function Test-CompatiblePython {
-    param([string]$Python, [object]$Profile = $null)
+    param([string]$Python, [object]$Profile = $null, [switch]$ThrowOnTimeout)
     if (-not $Python -or -not (Test-Path -LiteralPath $Python)) { return $false }
     $minimum = "3.10"
     $maximum = "3.14"
@@ -773,7 +773,10 @@ function Test-CompatiblePython {
         return $probe.ExitCode -eq 0
     }
     catch {
-        if (Test-ProbeTimeoutError $_.Exception) { Write-WarningMessage $_.Exception.Message }
+        if (Test-ProbeTimeoutError $_.Exception) {
+            if ($ThrowOnTimeout) { throw }
+            Write-WarningMessage $_.Exception.Message
+        }
         return $false
     }
     finally { $ErrorActionPreference = $previousErrorAction }
@@ -881,14 +884,14 @@ function Resolve-PythonMode {
         if ($preferred -notin @("Auto", $candidateMode)) { continue }
         $candidateRoot = Get-EnvironmentRootForMode $candidateMode
         $candidatePython = Get-EnvironmentPython $candidateMode $candidateRoot
-        if (Test-CompatiblePython $candidatePython $Profile) {
+        if (Test-CompatiblePython $candidatePython $Profile -ThrowOnTimeout) {
             return [pscustomobject]@{ Mode = $candidateMode; SystemPython = $null }
         }
     }
     $systemPython = Find-SystemPython $Profile
     if ($preferred -eq "System" -and -not $systemPython) {
         $existingVenvPython = Get-EnvironmentPython "System" $VenvDir
-        if (Test-CompatiblePython $existingVenvPython $Profile) {
+        if (Test-CompatiblePython $existingVenvPython $Profile -ThrowOnTimeout) {
             return [pscustomobject]@{ Mode = "System"; SystemPython = $null }
         }
         if ($WasExplicit -or $env:OMNIVOICE_PYTHON_MODE -eq "System") {
@@ -904,11 +907,11 @@ function Resolve-PythonMode {
         return [pscustomobject]@{ Mode = "Portable"; SystemPython = $systemPython }
     }
     $portablePython = Get-EnvironmentPython "Portable" $PortableDir
-    if (Test-CompatiblePython $portablePython $Profile) {
+    if (Test-CompatiblePython $portablePython $Profile -ThrowOnTimeout) {
         return [pscustomobject]@{ Mode = "Portable"; SystemPython = $systemPython }
     }
     $venvPython = Get-EnvironmentPython "System" $VenvDir
-    if (Test-CompatiblePython $venvPython $Profile) {
+    if (Test-CompatiblePython $venvPython $Profile -ThrowOnTimeout) {
         return [pscustomobject]@{ Mode = "System"; SystemPython = $systemPython }
     }
     $selected = Select-FirstRunMode $systemPython $Profile
@@ -957,7 +960,7 @@ function Install-PortablePythonAt {
         }
     }
     $python = Get-EnvironmentPython "Portable" $TargetRoot
-    if (-not (Test-CompatiblePython $python)) { throw "Portable Python is not compatible." }
+    if (-not (Test-CompatiblePython $python -ThrowOnTimeout)) { throw "Portable Python is not compatible." }
     Invoke-Checked -FilePath $python -Arguments @(
         "-m", "ensurepip", "--upgrade"
     ) -Description "Preparing pip in the portable Python environment"
@@ -966,7 +969,7 @@ function Install-PortablePythonAt {
 
 function New-SystemEnvironmentAt {
     param([string]$SystemPython, [string]$TargetRoot, [object]$Profile)
-    if (-not (Test-CompatiblePython $SystemPython $Profile)) {
+    if (-not (Test-CompatiblePython $SystemPython $Profile -ThrowOnTimeout)) {
         throw "A compatible 64-bit system Python is required for $($Profile.display_name)."
     }
     Assert-ProjectChildPath $TargetRoot | Out-Null
@@ -974,7 +977,7 @@ function New-SystemEnvironmentAt {
         "-m", "venv", $TargetRoot
     ) -Description "Creating the local virtual environment"
     $python = Get-EnvironmentPython "System" $TargetRoot
-    if (-not (Test-CompatiblePython $python $Profile)) {
+    if (-not (Test-CompatiblePython $python $Profile -ThrowOnTimeout)) {
         throw "The new virtual environment is not usable for this backend."
     }
     return $python
@@ -991,6 +994,53 @@ function New-PythonEnvironmentAt {
     return New-SystemEnvironmentAt $SystemPython $TargetRoot $Profile
 }
 
+function Move-ActiveRuntimeToBackup {
+    param([string]$ActiveRoot, [string]$BackupRoot)
+    if (-not (Test-Path -LiteralPath $ActiveRoot)) { return '' }
+    $reservedRoot = ''
+    if (Test-Path -LiteralPath $BackupRoot) {
+        $reservedRoot = Assert-ProjectChildPath ($ActiveRoot + '.retained-' + [Guid]::NewGuid().ToString('N'))
+        Assert-RuntimeNotInUse @($ActiveRoot, $BackupRoot, $reservedRoot)
+        # A broken active runtime must not erase the last working .old before
+        # the replacement survives validation at its final activated path.
+        Move-Item -LiteralPath $BackupRoot -Destination $reservedRoot
+    }
+    try { Move-Item -LiteralPath $ActiveRoot -Destination $BackupRoot }
+    catch {
+        $moveError = $_
+        if ($reservedRoot) {
+            try { Restore-ReservedRuntimeBackup $BackupRoot $reservedRoot }
+            catch {
+                $message = "Could not prepare runtime activation or restore its original backup. Active: $ActiveRoot ; backup: $BackupRoot ; retained backup: $reservedRoot. Preparation error: $($moveError.Exception.Message) Recovery error: $($_.Exception.Message)"
+                throw (New-Object InvalidOperationException -ArgumentList $message, $_.Exception)
+            }
+        }
+        throw $moveError
+    }
+    return $reservedRoot
+}
+
+function Restore-ReservedRuntimeBackup {
+    param([string]$BackupRoot, [string]$ReservedRoot)
+    if (-not $ReservedRoot) { return }
+    Assert-RuntimeNotInUse @($BackupRoot, $ReservedRoot)
+    if (-not (Test-Path -LiteralPath $ReservedRoot)) { throw "The retained previous backup is missing: $ReservedRoot" }
+    if (Test-Path -LiteralPath $BackupRoot) { throw "Refusing to overwrite an existing backup at $BackupRoot; retained backup: $ReservedRoot" }
+    Move-Item -LiteralPath $ReservedRoot -Destination $BackupRoot
+}
+
+function Complete-ReservedRuntimeBackup {
+    param([string]$ReservedRoot)
+    if (-not $ReservedRoot) { return }
+    try {
+        Assert-RuntimeNotInUse @($ReservedRoot)
+        Remove-LauncherDirectory $ReservedRoot
+    }
+    catch {
+        Write-WarningMessage "The new runtime was validated, but an obsolete prior backup could not be removed / Nowe srodowisko dziala, ale zachowano poprzednia kopie: $ReservedRoot. $($_.Exception.Message)"
+    }
+}
+
 function Install-PythonBootstrapTransaction {
     param(
         [string]$SelectedMode, [string]$SystemPython,
@@ -1000,38 +1050,47 @@ function Install-PythonBootstrapTransaction {
     $backupRoot = "$ActiveRoot.old"
     Assert-RuntimeNotInUse @($ActiveRoot, $stagingRoot, $backupRoot)
     $stagingPython = New-PythonEnvironmentAt $SelectedMode $stagingRoot $SystemPython $Profile
-    if (-not (Test-CompatiblePython $stagingPython $Profile)) {
+    if (-not (Test-CompatiblePython $stagingPython $Profile -ThrowOnTimeout)) {
         throw "The staged Python bootstrap is not compatible with this backend."
     }
     Assert-RuntimeNotInUse @($ActiveRoot, $stagingRoot, $backupRoot)
-    if (Test-Path -LiteralPath $ActiveRoot) {
-        Remove-LauncherDirectory $backupRoot
-        Move-Item -LiteralPath $ActiveRoot -Destination $backupRoot
-    }
+    $reservedBackup = Move-ActiveRuntimeToBackup $ActiveRoot $backupRoot
     try {
         Move-Item -LiteralPath $stagingRoot -Destination $ActiveRoot
         $python = Get-EnvironmentPython $SelectedMode $ActiveRoot
-        if (-not (Test-CompatiblePython $python $Profile)) {
+        if (-not (Test-CompatiblePython $python $Profile -ThrowOnTimeout)) {
             throw "The activated Python bootstrap is not usable."
         }
         Repair-EnvironmentEntryPoints $python $ActiveRoot $null | Out-Null
+        Complete-ReservedRuntimeBackup $reservedBackup
         return $python
     }
     catch {
-        if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
-        $activationError = $_.Exception.Message
+        if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception)) { throw }
+        $activationException = $_.Exception
+        $activationError = $activationException.Message
+        $activationWasProbeTimeout = Test-ProbeTimeoutError $activationException
         $restored = $false
         try {
-            Assert-RuntimeNotInUse @($ActiveRoot, $backupRoot)
+            $recoveryRoots = @($ActiveRoot, $backupRoot)
+            if ($reservedBackup) { $recoveryRoots += $reservedBackup }
+            Assert-RuntimeNotInUse $recoveryRoots
             Remove-LauncherDirectory $ActiveRoot
             if (Test-Path -LiteralPath $backupRoot) {
                 Move-Item -LiteralPath $backupRoot -Destination $ActiveRoot
                 $restored = $true
             }
+            Restore-ReservedRuntimeBackup $backupRoot $reservedBackup
         }
         catch {
-            if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
-            throw "Python bootstrap failed and automatic recovery failed. Inspect the environment at $ActiveRoot and backup at $backupRoot. Bootstrap error: $activationError Recovery error: $($_.Exception.Message)"
+            $message = "Python bootstrap failed and automatic recovery failed. Inspect the environment at $ActiveRoot and backup at $backupRoot. Retained prior backup: $reservedBackup. Bootstrap error: $activationError Recovery error: $($_.Exception.Message)"
+            if ($activationWasProbeTimeout) { throw (New-Object TimeoutException -ArgumentList $message, $activationException) }
+            throw (New-Object InvalidOperationException -ArgumentList $message, $_.Exception)
+        }
+        if ($activationWasProbeTimeout) {
+            $state = if ($restored) { 'The previous environment was restored after bootstrap timeout.' }
+                else { 'Python bootstrap timed out. No previous environment was available to restore.' }
+            throw (New-Object TimeoutException -ArgumentList "$state $activationError", $activationException)
         }
         if ($restored) {
             throw "The previous environment was restored after bootstrap failure. $activationError"
@@ -1192,7 +1251,7 @@ function Test-Runtime {
         if (-not (Test-Path -LiteralPath $Python)) {
             throw "The application environment has not been installed yet."
         }
-        if (-not (Test-CompatiblePython $Python $Profile)) {
+        if (-not (Test-CompatiblePython $Python $Profile -ThrowOnTimeout)) {
             throw "The environment uses an incompatible Python version."
         }
         $marker = Read-ReadyMarker $EnvironmentRoot
@@ -1358,10 +1417,7 @@ function Install-RuntimeTransaction {
         throw "The staged environment was not activated. $($_.Exception.Message)"
     }
     Assert-RuntimeNotInUse @($activeRoot, $stagingRoot, $backupRoot, "$activeRoot.failed")
-    if (Test-Path -LiteralPath $activeRoot) {
-        Remove-LauncherDirectory $backupRoot
-        Move-Item -LiteralPath $activeRoot -Destination $backupRoot
-    }
+    $reservedBackup = Move-ActiveRuntimeToBackup $activeRoot $backupRoot
     try {
         Move-Item -LiteralPath $stagingRoot -Destination $activeRoot
         $activePython = Get-EnvironmentPython $SelectedMode $activeRoot
@@ -1369,16 +1425,22 @@ function Install-RuntimeTransaction {
             $HardwareFingerprint $activeRoot)) {
             throw "Activated runtime validation failed: $script:LastRuntimeError"
         }
+        Complete-ReservedRuntimeBackup $reservedBackup
         return $activePython
     }
     catch {
-        if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
-        $activationError = $_.Exception.Message
-        $activationWasPipConfigurationError = Test-PipConfigurationError $_.Exception
+        if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception)) { throw }
+        $activationException = $_.Exception
+        $activationError = $activationException.Message
+        $activationWasProbeTimeout = Test-ProbeTimeoutError $activationException
+        $activationWasPipConfigurationError = Test-PipConfigurationError $activationException
         $failedRoot = "$activeRoot.failed"
         $restored = $false
+        $priorBackupRestored = -not $reservedBackup
         try {
-            Assert-RuntimeNotInUse @($activeRoot, $backupRoot, $failedRoot)
+            $recoveryRoots = @($activeRoot, $backupRoot, $failedRoot)
+            if ($reservedBackup) { $recoveryRoots += $reservedBackup }
+            Assert-RuntimeNotInUse $recoveryRoots
             Remove-LauncherDirectory $failedRoot
             if (Test-Path -LiteralPath $activeRoot) {
                 Move-Item -LiteralPath $activeRoot -Destination $failedRoot
@@ -1387,16 +1449,27 @@ function Install-RuntimeTransaction {
                 Move-Item -LiteralPath $backupRoot -Destination $activeRoot
                 $restored = $true
             }
+            Restore-ReservedRuntimeBackup $backupRoot $reservedBackup
+            $priorBackupRestored = $true
             Remove-LauncherDirectory $failedRoot
         }
         catch {
-            if ((Test-RuntimeInUseError $_.Exception) -or (Test-UnsafeLauncherPathError $_.Exception) -or (Test-ProbeTimeoutError $_.Exception)) { throw }
-            $recoveryState = if ($restored) { 'The previous environment was restored, but failed-runtime cleanup failed.' }
+            $recoveryState = if ($restored -and -not $priorBackupRestored) { "The previous environment was restored, but its original backup could not be restored. Inspect $backupRoot and retained backup $reservedBackup." }
+                elseif ($restored) { 'The previous environment was restored, but failed-runtime cleanup failed.' }
                 else { "Automatic recovery failed. Inspect the environment at $activeRoot, backup at $backupRoot and failed runtime at $failedRoot." }
+            if ($reservedBackup -and -not $priorBackupRestored) { $recoveryState += " Retained backup path: $reservedBackup." }
+            if ($activationWasProbeTimeout) {
+                throw (New-Object TimeoutException -ArgumentList "$recoveryState Activation error: $activationError Recovery error: $($_.Exception.Message)", $activationException)
+            }
             if ($activationWasPipConfigurationError) {
                 throw (New-PipConfigurationError "$recoveryState Activation error: $activationError Recovery error: $($_.Exception.Message)")
             }
-            throw "$recoveryState Activation error: $activationError Recovery error: $($_.Exception.Message)"
+            throw (New-Object InvalidOperationException -ArgumentList "$recoveryState Activation error: $activationError Recovery error: $($_.Exception.Message)", $_.Exception)
+        }
+        if ($activationWasProbeTimeout) {
+            $recoveryState = if ($restored) { 'The previous environment was restored after runtime activation timeout.' }
+                else { 'Runtime activation timed out. No previous environment was available to restore.' }
+            throw (New-Object TimeoutException -ArgumentList "$recoveryState $activationError", $activationException)
         }
         if ($activationWasPipConfigurationError) {
             $recoveryState = if ($restored) { 'The previous environment was restored.' }
@@ -1611,7 +1684,7 @@ function Invoke-LauncherSession {
     $activeRoot = Get-EnvironmentRootForMode $selectedMode
     $python = Get-EnvironmentPython $selectedMode $activeRoot
     if ($BootstrapOnly) {
-        if (-not (Test-CompatiblePython $python $profile)) {
+        if (-not (Test-CompatiblePython $python $profile -ThrowOnTimeout)) {
             $python = Install-PythonBootstrapTransaction $selectedMode $systemPython `
                 $profile $activeRoot
         }

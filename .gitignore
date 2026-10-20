@@ -36,9 +36,11 @@ settings.json
 /env.new/
 /env.old/
 /env.failed/
+/env.retained-*/
 /venv.new/
 /venv.old/
 /venv.failed/
+/venv.retained-*/
 /.launcher/
 /trash/
 /Forme/

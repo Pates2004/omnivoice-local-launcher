@@ -28,6 +28,15 @@ Each attribute belongs to a **category** (gender, age, pitch, style, accent,
 or dialect). Within a category, only one attribute may be selected at a time.
 Attributes from different categories can be freely combined.
 
+These are predefined tags, not arbitrary prose descriptions. For example,
+`female, whisper` is valid; `calm narrator` is not. Repeating the same attribute,
+including an equivalent English/Chinese tag, is harmless and is deduplicated.
+Different values in the same category, such as `male, female`, remain a conflict.
+
+Po polsku: wpisuj obsługiwane znaczniki oddzielone przecinkami, a nie dowolny
+opis głosu. Powtórzenie tej samej cechy jest pomijane; sprzeczne cechy nadal
+powodują błąd. Dostępne znaczniki podano w tabelach poniżej.
+
 The model auto-detects the language of the instruct text and normalises it
 internally — you can write in English, Chinese, or a mix of both.
 

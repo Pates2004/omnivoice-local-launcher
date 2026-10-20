@@ -116,7 +116,11 @@ foreach ($transaction in @('Runtime', 'Bootstrap')) {
                 default {
                     Assert-RecoveryTest ($errorMessage -match 'previous environment was restored') "$label confirms restoration"
                     Assert-RecoveryTest ($paths[$runtimeRoot] -eq 'previous') "$label restores previous runtime"
-                    Assert-RecoveryTest (-not $paths.ContainsKey($backupRoot)) "$label moves rather than duplicates backup"
+                    if ($scenario -eq 'existing-failure') {
+                        Assert-RecoveryTest ($paths[$backupRoot] -eq 'older') "$label preserves the older original backup as well"
+                    } else {
+                        Assert-RecoveryTest (-not $paths.ContainsKey($backupRoot)) "$label moves rather than duplicates backup"
+                    }
                 }
             }
         }

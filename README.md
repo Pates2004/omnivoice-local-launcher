@@ -106,6 +106,17 @@ Installation is transactional. A replacement is built and tested in
 `env.new/` or `venv.new/`; only a fully valid runtime replaces the active
 environment. The previous working environment is kept as `env.old/` or
 `venv.old/`.
+An already existing `.old` backup is temporarily moved to a unique
+`.retained-*` sibling, not erased before final-path validation. Failed activation
+restores the original active runtime and its original backup whenever files are
+not in use. Recovery obstacles report the exact retained locations; a cleanup
+failure after successful validation is a warning, not a false installation failure.
+These managed runtime backups are ignored by Git.
+
+Po polsku: zastana kopia `.old` nie jest kasowana przed sprawdzeniem nowego
+środowiska w docelowym miejscu. Na czas zamiany trafia do `.retained-*`.
+Nieudana aktywacja przywraca wcześniejsze środowisko i jego kopię, o ile pliki
+nie są używane. Przy przeszkodzie launcher podaje zachowane ścieżki odzyskiwania.
 An orphan `.old` left by an interrupted activation remains available for recovery.
 A failed interpreter probe also permits repair/discovery of a replacement Python;
 native stderr diagnostics do not unexpectedly abort the probe.

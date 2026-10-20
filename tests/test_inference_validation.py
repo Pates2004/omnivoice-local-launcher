@@ -86,6 +86,31 @@ def engine_namespace(torch_module=None):
     return namespace
 
 
+def audio_namespace():
+    """Load audio utilities without importing torch/torchaudio or model weights."""
+    source = ROOT / "omnivoice/utils/audio.py"
+    names = {
+        "normalize_reference_waveform",
+        "numpy_to_audiosegment",
+        "audiosegment_to_numpy",
+        "remove_silence_edges",
+        "remove_silence",
+    }
+    nodes = [
+        node
+        for node in ast.parse(source.read_text(encoding="utf-8")).body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    namespace = {"np": np}
+    module = ast.Module(
+        body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
+        + nodes,
+        type_ignores=[],
+    )
+    exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
+    return namespace
+
+
 class PromptValidationTests(unittest.TestCase):
     def setUp(self):
         self.engine = engine_namespace()
@@ -239,8 +264,69 @@ class OutputValidationTests(unittest.TestCase):
             self.engine["_decode_and_post_process"](model, [], None, self.config)
 
 
+class ReferenceWaveformLayoutTests(unittest.TestCase):
+    def test_negative_strides_are_removed_without_changing_audio(self):
+        normalize = audio_namespace()["normalize_reference_waveform"]
+        for length in (1, 500):
+            original = np.linspace(0.1, 0.9, length, dtype=np.float32)
+            for waveform in (original[::-1], original[np.newaxis, ::-1]):
+                with self.subTest(length=length, shape=waveform.shape):
+                    normalized = normalize(waveform, 24000)
+                    self.assertEqual(normalized.shape, (1, length))
+                    self.assertEqual(normalized.dtype, np.float32)
+                    self.assertTrue(all(stride >= 0 for stride in normalized.strides))
+                    np.testing.assert_array_equal(normalized, original[np.newaxis, ::-1])
+
+    def test_supported_layouts_do_not_gain_an_unnecessary_copy(self):
+        original = np.full((1, 500), 0.25, dtype=np.float32)
+        normalize = audio_namespace()["normalize_reference_waveform"]
+        for waveform in (original, original[:, ::2]):
+            with self.subTest(strides=waveform.strides):
+                self.assertIs(normalize(waveform, 24000), waveform)
+
+
 @unittest.skipUnless(importlib.util.find_spec("pydub"), "Optional real PCM conversion validation")
 class PcmConversionTests(unittest.TestCase):
+    def silence_utilities(self):
+        from pydub import AudioSegment
+        from pydub.silence import detect_leading_silence, split_on_silence
+
+        namespace = audio_namespace()
+        namespace.update(
+            AudioSegment=AudioSegment,
+            detect_leading_silence=detect_leading_silence,
+            split_on_silence=split_on_silence,
+        )
+        return namespace
+
+    def test_silence_removal_preserves_sample_rate_and_channel_layout(self):
+        remove_silence = self.silence_utilities()["remove_silence"]
+        for sample_rate in (4000, 8000, 11025, 16000, 24000, 48000):
+            for channels in (1, 2):
+                with self.subTest(sample_rate=sample_rate, channels=channels):
+                    audio = np.full((channels, sample_rate), 0.25, dtype=np.float32)
+                    if channels == 2:
+                        audio[1] = -0.5
+                    output = remove_silence(
+                        audio, sample_rate, mid_sil=100, lead_sil=0, trail_sil=0
+                    )
+                    self.assertEqual(output.shape, audio.shape)
+                    np.testing.assert_array_equal(output, audio)
+
+    def test_entirely_silent_audio_keeps_its_channel_layout_when_empty(self):
+        remove_silence = self.silence_utilities()["remove_silence"]
+        for sample_rate in (8000, 24000, 48000):
+            for channels in (1, 2):
+                with self.subTest(sample_rate=sample_rate, channels=channels):
+                    output = remove_silence(
+                        np.zeros((channels, sample_rate), dtype=np.float32),
+                        sample_rate,
+                        mid_sil=100,
+                        lead_sil=0,
+                        trail_sil=0,
+                    )
+                    self.assertEqual(output.shape, (channels, 0))
+
     def test_invalid_samples_cannot_be_hidden_by_real_silence_processing(self):
         from pydub import AudioSegment
         from pydub.silence import detect_leading_silence, split_on_silence
@@ -286,6 +372,17 @@ class SerializedPromptTests(unittest.TestCase):
         self.torch = torch
         self.engine = engine_namespace(torch)
         self.prompt_type = self.engine["VoiceClonePrompt"]
+
+    def test_reversed_reference_array_is_ready_for_cpu_tokenizer_conversion(self):
+        normalize = audio_namespace()["normalize_reference_waveform"]
+        original = np.linspace(0.1, 0.9, 500, dtype=np.float32)
+        for waveform in (original[::-1], original[np.newaxis, ::-1]):
+            with self.subTest(shape=waveform.shape):
+                normalized = normalize(waveform, 24000)
+                tensor = self.torch.from_numpy(normalized)
+                self.assertEqual(tensor.shape, (1, 500))
+                self.assertEqual(tensor.dtype, self.torch.float32)
+                np.testing.assert_array_equal(tensor.numpy(), original[np.newaxis, ::-1])
 
     def test_real_cpu_roundtrip_preserves_tokens_and_empty_transcript(self):
         tokens = self.torch.arange(16, dtype=self.torch.int64).reshape(8, 2)

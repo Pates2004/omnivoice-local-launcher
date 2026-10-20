@@ -68,7 +68,9 @@ def normalize_reference_waveform(waveform, sample_rate):
     if waveform.shape[0] > 1:
         # Float64 accumulation avoids float32 overflow on otherwise finite input.
         waveform = waveform.mean(axis=0, keepdims=True, dtype=np.float64).astype(np.float32)
-    return waveform
+    # Reversed/sliced NumPy references may have negative strides, which
+    # torch.from_numpy cannot consume at the tokenizer boundary.
+    return waveform.copy() if any(stride < 0 for stride in waveform.strides) else waveform
 
 
 def load_waveform(audio_path: str):
@@ -205,7 +207,9 @@ def remove_silence(
             keep_silence=mid_sil,
             seek_step=10,
         )
-        wave = AudioSegment.silent(duration=0)
+        # Keep the source format: a default silent segment would resample
+        # low-rate audio to 11025 Hz and discard channels when no speech remains.
+        wave = wave[:0]
         for seg in non_silent_segs:
             wave += seg
 

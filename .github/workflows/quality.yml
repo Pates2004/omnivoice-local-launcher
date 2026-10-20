@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install quality tools
-        run: python -m pip install "ruff>=0.11" packaging numpy "num2words>=0.5.14"
+        run: python -m pip install "ruff>=0.11" packaging numpy pydub "num2words>=0.5.14"
       - name: Lint and compile Python sources
         run: |
           ruff check omnivoice tests installer_runtime.py
